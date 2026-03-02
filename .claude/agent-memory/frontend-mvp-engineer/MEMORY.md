@@ -34,6 +34,7 @@
 - Auth: `.auth-page` (full-screen gradient), `.auth-card` (max-w 380px card)
 - Badges: `.badge.available/busy/checked-in/not-checked-in`
 - Messages: `.message.info/success/error`, auto-remove after 6s
+- Cards: `.card` — white surface, 1px border, radius, shadow (added in Phase 3 to admin/styles.css)
 
 ### Admin Layout
 - `.admin-layout`: CSS grid 220px sidebar + 1fr main
@@ -57,9 +58,21 @@
 - Admin QR button per desk row
 - My Bookings: `checked_in_at` badge
 
+### Phase 3 Features (implemented in admin/)
+- **Placement editor** (`#placement-panel` in `#tab-floors`): select floor, view PNG plan with overlay; click unplaced desk button then click plan image to PATCH position_x/y (0.0–1.0); placed desks render as circles; click circle to unplace (PATCH null)
+- **Reservation filters** (`#tab-reservations`): filter bar (office, date-from, date-to, user, status); builds URLSearchParams appended to `GET /reservations`; Apply and Reset buttons wired to `loadReservations()`
+- **Analytics tab** (`#tab-analytics`): KPI cards, occupancy progress bars per office, top desks table, top users table; calls `GET /analytics`; auto-loads on tab switch and inside `loadAll()`
+
+### Populate selects pattern (admin)
+- `populateOfficeSelects()` fills: `floorOfficeSelect`, `policyOfficeSelect`, `#filter-office`
+  - `#filter-office` gets placeholder "Все офисы"; others get "Выберите офис"
+- `populateFloorSelects()` fills: `deskFloorSelect`, `planFloorSelect`, `#placement-floor-select`
+
 ### Known Patterns to Watch
 - `admin.js` must NOT use ES module syntax (loaded as plain `<script>`)
 - `app.js` in client uses `type="module"` — ES2020+ fine
 - Set `tr.innerHTML` first, then `querySelector` + `append` buttons (innerHTML clears listeners)
-- Floor select disabled until office selected
 - Admin init validates saved token via `/offices` before showing UI
+- `initPlacementEditor()` called in both authenticated and unauthenticated branches of `init()` so the change listener is always attached before `loadAll()` populates the select
+- Placement overlay uses `overlay.onclick = fn` (assignment, not addEventListener) to avoid stacking duplicate handlers on re-render
+- `renderUnplacedDesks` checks both `=== null` and `=== undefined` since the API may omit the field entirely rather than sending null

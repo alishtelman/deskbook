@@ -79,7 +79,8 @@ function showLoginOverlay() {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function addMessage(text, type = "info") {
+function addMessage(text, type) {
+  type = type || "info";
   const item = document.createElement("div");
   item.className = "message " + type;
   item.textContent = text;
@@ -174,10 +175,76 @@ async function loadPolicies() {
 
 async function loadReservations() {
   try {
-    state.reservations = await apiRequest("/reservations");
+    const officeId = document.getElementById("filter-office").value;
+    const dateFrom = document.getElementById("filter-date-from").value;
+    const dateTo   = document.getElementById("filter-date-to").value;
+    const userId   = document.getElementById("filter-user").value.trim();
+    const status   = document.getElementById("filter-status").value;
+
+    const qs = new URLSearchParams();
+    if (officeId) qs.set("office_id", officeId);
+    if (dateFrom) qs.set("date_from", dateFrom);
+    if (dateTo)   qs.set("date_to", dateTo);
+    if (userId)   qs.set("user_id", userId);
+    if (status)   qs.set("status", status);
+
+    const query = qs.toString();
+    state.reservations = await apiRequest("/reservations" + (query ? "?" + query : ""));
     renderReservationsTable();
   } catch (e) {
     addMessage("Не удалось загрузить бронирования: " + e.message, "error");
+  }
+}
+
+async function loadAnalytics() {
+  try {
+    const data = await apiRequest("/analytics");
+
+    document.getElementById("kpi-today").textContent     = data.total_today;
+    document.getElementById("kpi-active").textContent    = data.total_active;
+    document.getElementById("kpi-cancelled").textContent = data.total_cancelled;
+    document.getElementById("kpi-noshow").textContent    = data.noshow_rate + "%";
+
+    // Occupancy bars
+    const occupancyEl = document.getElementById("occupancy-list");
+    occupancyEl.innerHTML = "";
+    if (!data.occupancy_by_office || !data.occupancy_by_office.length) {
+      occupancyEl.innerHTML = '<p class="empty">Нет данных</p>';
+    } else {
+      data.occupancy_by_office.forEach(function (o) {
+        const row = document.createElement("div");
+        row.style.cssText = "margin-bottom:12px";
+        row.innerHTML = (
+          '<div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:13px">' +
+            '<span style="font-weight:500">' + o.office_name + '</span>' +
+            '<span style="color:var(--text-2)">' + o.booked_today + ' / ' + o.total_desks + ' мест (' + o.occupancy_pct + '%)</span>' +
+          '</div>' +
+          '<div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden">' +
+            '<div style="height:100%;background:var(--accent);border-radius:4px;width:' + o.occupancy_pct + '%;transition:width .4s"></div>' +
+          '</div>'
+        );
+        occupancyEl.append(row);
+      });
+    }
+
+    // Top desks
+    const desksBody = document.getElementById("top-desks-body");
+    desksBody.innerHTML = (data.top_desks && data.top_desks.length)
+      ? data.top_desks.map(function (d) {
+          return "<tr><td>" + d.label + "</td><td>" + d.floor_name + "</td><td>" + d.office_name + "</td><td><strong>" + d.total + "</strong></td></tr>";
+        }).join("")
+      : '<tr><td colspan="4" class="empty">Нет данных</td></tr>';
+
+    // Top users
+    const usersBody = document.getElementById("top-users-body");
+    usersBody.innerHTML = (data.top_users && data.top_users.length)
+      ? data.top_users.map(function (u) {
+          return "<tr><td>" + u.user_id + "</td><td><strong>" + u.total + "</strong></td></tr>";
+        }).join("")
+      : '<tr><td colspan="2" class="empty">Нет данных</td></tr>';
+
+  } catch (e) {
+    addMessage("Аналитика: " + e.message, "error");
   }
 }
 
@@ -185,6 +252,7 @@ async function loadAll() {
   await loadOffices();
   await Promise.all([loadFloors(), loadPolicies(), loadReservations()]);
   await loadDesks();
+  await loadAnalytics();
 }
 
 // ── Render helpers ────────────────────────────────────────────────────────────
@@ -356,7 +424,7 @@ function renderReservationsTable() {
     var tr = document.createElement("tr");
     var checkinText = r.checked_in_at ? r.checked_in_at.slice(11, 16) : "—";
     var statusClass = r.status === "active" ? "active" : "cancelled";
-    var statusText = r.status === "active" ? "Активно" : "Отменено";
+    var statusText  = r.status === "active" ? "Активно" : "Отменено";
     tr.innerHTML = (
       "<td>" + r.id + "</td>" +
       "<td>" + r.desk_id + "</td>" +
@@ -377,9 +445,12 @@ function renderReservationsTable() {
 
 // ── Populate selects ──────────────────────────────────────────────────────────
 function populateOfficeSelects() {
-  [floorOfficeSelect, policyOfficeSelect].forEach(function (sel) {
+  [floorOfficeSelect, policyOfficeSelect, document.getElementById("filter-office")].forEach(function (sel) {
+    if (!sel) return;
     var val = sel.value;
-    sel.innerHTML = '<option value="">Выберите офис</option>';
+    // Preserve the first placeholder option text per select
+    var placeholder = sel === document.getElementById("filter-office") ? "Все офисы" : "Выберите офис";
+    sel.innerHTML = '<option value="">' + placeholder + '</option>';
     state.offices.forEach(function (o) {
       var opt = document.createElement("option");
       opt.value = o.id;
@@ -391,7 +462,8 @@ function populateOfficeSelects() {
 }
 
 function populateFloorSelects() {
-  [deskFloorSelect, planFloorSelect].forEach(function (sel) {
+  [deskFloorSelect, planFloorSelect, document.getElementById("placement-floor-select")].forEach(function (sel) {
+    if (!sel) return;
     var val = sel.value;
     sel.innerHTML = '<option value="">Выберите этаж</option>';
     state.floors.forEach(function (f) {
@@ -404,6 +476,137 @@ function populateFloorSelects() {
   });
 }
 
+// ── Placement editor ──────────────────────────────────────────────────────────
+var selectedDeskForPlacement = null;
+
+function initPlacementEditor() {
+  var floorSel = document.getElementById("placement-floor-select");
+  floorSel.addEventListener("change", function () {
+    loadPlacementFloor(floorSel.value);
+  });
+}
+
+async function loadPlacementFloor(floorId) {
+  var area   = document.getElementById("placement-area");
+  var noplan = document.getElementById("placement-no-plan");
+  area.style.display = "none";
+  noplan.classList.add("hidden");
+  selectedDeskForPlacement = null;
+  if (!floorId) return;
+
+  var floor = state.floors.find(function (f) { return String(f.id) === String(floorId); });
+  if (!floor || !floor.plan_url) { noplan.classList.remove("hidden"); return; }
+
+  var img = document.getElementById("placement-plan-img");
+  img.src = floor.plan_url;
+  area.style.display = "";
+
+  try {
+    var desks = await apiRequest("/desks?floor_id=" + floorId);
+    renderPlacementOverlay(desks, img);
+    renderUnplacedDesks(desks, img);
+  } catch (e) {
+    addMessage("Ошибка загрузки мест: " + e.message, "error");
+  }
+}
+
+function renderPlacementOverlay(desks, img) {
+  var overlay = document.getElementById("placement-overlay");
+  overlay.innerHTML = "";
+
+  // Click on plan to place selected desk
+  overlay.onclick = async function (e) {
+    if (!selectedDeskForPlacement) return;
+    var rect = img.getBoundingClientRect();
+    var x = (e.clientX - rect.left) / rect.width;
+    var y = (e.clientY - rect.top) / rect.height;
+    try {
+      await apiRequest("/desks/" + selectedDeskForPlacement.id, {
+        method: "PATCH",
+        body: JSON.stringify({
+          position_x: Math.round(x * 1000) / 1000,
+          position_y: Math.round(y * 1000) / 1000,
+        }),
+      });
+      selectedDeskForPlacement = null;
+      var floorId = document.getElementById("placement-floor-select").value;
+      var updated = await apiRequest("/desks?floor_id=" + floorId);
+      renderPlacementOverlay(updated, img);
+      renderUnplacedDesks(updated, img);
+      addMessage("Место размещено.", "success");
+    } catch (e) {
+      addMessage("Ошибка: " + e.message, "error");
+    }
+  };
+
+  // Draw placed desk markers
+  desks.filter(function (d) {
+    return typeof d.position_x === "number" && typeof d.position_y === "number";
+  }).forEach(function (d) {
+    var marker = document.createElement("div");
+    marker.title = d.label + " — нажмите чтобы снять";
+    marker.style.cssText = (
+      "position:absolute;width:28px;height:28px;border-radius:50%;" +
+      "background:var(--accent);color:white;font-size:10px;font-weight:700;" +
+      "display:flex;align-items:center;justify-content:center;" +
+      "transform:translate(-50%,-50%);cursor:pointer;" +
+      "border:2px solid white;box-shadow:var(--shadow);"
+    );
+    marker.style.left = (d.position_x * 100) + "%";
+    marker.style.top  = (d.position_y * 100) + "%";
+    marker.textContent = d.label.slice(0, 2).toUpperCase();
+    marker.onclick = async function (e) {
+      e.stopPropagation();
+      if (!confirm("Снять стол «" + d.label + "» с плана?")) return;
+      try {
+        await apiRequest("/desks/" + d.id, {
+          method: "PATCH",
+          body: JSON.stringify({ position_x: null, position_y: null }),
+        });
+        var floorId = document.getElementById("placement-floor-select").value;
+        var updated = await apiRequest("/desks?floor_id=" + floorId);
+        renderPlacementOverlay(updated, img);
+        renderUnplacedDesks(updated, img);
+      } catch (e) {
+        addMessage("Ошибка: " + e.message, "error");
+      }
+    };
+    overlay.append(marker);
+  });
+}
+
+function renderUnplacedDesks(desks, img) {
+  var container    = document.getElementById("unplaced-desks");
+  var allPlacedMsg = document.getElementById("all-placed-msg");
+  container.innerHTML = "";
+  var unplaced = desks.filter(function (d) {
+    return d.position_x === null || d.position_x === undefined ||
+           d.position_y === null || d.position_y === undefined;
+  });
+  if (!unplaced.length) {
+    allPlacedMsg.classList.remove("hidden");
+    return;
+  }
+  allPlacedMsg.classList.add("hidden");
+  unplaced.forEach(function (d) {
+    var btn = document.createElement("button");
+    btn.className = "btn btn-secondary btn-sm";
+    btn.textContent = d.label + (d.zone ? " · " + d.zone : "");
+    btn.style.textAlign = "left";
+    btn.onclick = function () {
+      selectedDeskForPlacement = d;
+      document.querySelectorAll("#unplaced-desks .btn").forEach(function (b) {
+        b.style.background = "";
+        b.style.color = "";
+      });
+      btn.style.background = "var(--accent)";
+      btn.style.color = "white";
+      addMessage("Выбран стол «" + d.label + "». Кликните на план для размещения.", "info");
+    };
+    container.append(btn);
+  });
+}
+
 // ── Tab switching ─────────────────────────────────────────────────────────────
 document.querySelectorAll(".nav-item[data-tab]").forEach(function (btn) {
   btn.addEventListener("click", function () {
@@ -411,7 +614,19 @@ document.querySelectorAll(".nav-item[data-tab]").forEach(function (btn) {
     document.querySelectorAll(".tab-content").forEach(function (t) { t.classList.add("hidden"); });
     btn.classList.add("active");
     document.getElementById("tab-" + btn.dataset.tab).classList.remove("hidden");
+    if (btn.dataset.tab === "analytics") loadAnalytics();
   });
+});
+
+// ── Reservation filters ───────────────────────────────────────────────────────
+document.getElementById("apply-filters-btn").addEventListener("click", loadReservations);
+document.getElementById("reset-filters-btn").addEventListener("click", function () {
+  document.getElementById("filter-office").value    = "";
+  document.getElementById("filter-date-from").value = "";
+  document.getElementById("filter-date-to").value   = "";
+  document.getElementById("filter-user").value      = "";
+  document.getElementById("filter-status").value    = "";
+  loadReservations();
 });
 
 // ── Login form ────────────────────────────────────────────────────────────────
@@ -462,6 +677,7 @@ document.getElementById("refresh-floors").addEventListener("click", loadFloors);
 document.getElementById("refresh-desks").addEventListener("click", loadDesks);
 document.getElementById("refresh-policies").addEventListener("click", loadPolicies);
 document.getElementById("refresh-reservations").addEventListener("click", loadReservations);
+document.getElementById("refresh-analytics").addEventListener("click", loadAnalytics);
 
 // ── Create office ─────────────────────────────────────────────────────────────
 document.getElementById("create-office-btn").addEventListener("click", async function () {
@@ -580,18 +796,20 @@ document.getElementById("create-policy-btn").addEventListener("click", async fun
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   await checkApi();
-  var token = getToken();
+  var token    = getToken();
   var username = localStorage.getItem("admin_username");
   if (token && username) {
     try {
       await apiRequest("/offices");
       showAdminUI(username);
+      initPlacementEditor();
       await loadAll();
     } catch {
       clearToken();
     }
   } else {
     showLoginOverlay();
+    initPlacementEditor();
   }
 }
 

@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime, time, timedelta
 from typing import Optional
 
-from sqlalchemy import and_
+from sqlalchemy import and_, desc, func
 from sqlalchemy.orm import Session
 
 from . import models, schemas
@@ -283,12 +283,33 @@ def list_reservations(
     db: Session,
     desk_id: Optional[int] = None,
     reservation_date: Optional[date] = None,
+    user_id: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    office_id: Optional[int] = None,
+    status: Optional[str] = None,
 ) -> list[models.Reservation]:
     q = db.query(models.Reservation)
+    if office_id is not None:
+        # Join through Desk -> Floor to filter by office
+        q = (
+            q.join(models.Desk, models.Reservation.desk_id == models.Desk.id)
+            .join(models.Floor, models.Desk.floor_id == models.Floor.id)
+            .filter(models.Floor.office_id == office_id)
+        )
     if desk_id is not None:
         q = q.filter(models.Reservation.desk_id == desk_id)
     if reservation_date is not None:
         q = q.filter(models.Reservation.reservation_date == reservation_date)
+    if user_id is not None:
+        q = q.filter(models.Reservation.user_id == user_id)
+    if date_from is not None:
+        q = q.filter(models.Reservation.reservation_date >= date_from)
+    if date_to is not None:
+        q = q.filter(models.Reservation.reservation_date <= date_to)
+    if status is not None:
+        q = q.filter(models.Reservation.status == status)
+    q = q.order_by(models.Reservation.reservation_date.desc(), models.Reservation.id.desc())
     return q.all()
 
 
@@ -308,6 +329,46 @@ def create_reservation(db: Session, payload: schemas.ReservationCreate) -> model
         raise ValueError("Desk is fixed but has no assigned employee.")
     if desk.type == "fixed" and desk.assigned_to and desk.assigned_to != payload.user_id:
         raise ValueError("Desk is assigned to another employee.")
+
+    # Enforce booking policy for the office this desk belongs to
+    floor = db.query(models.Floor).filter(models.Floor.id == desk.floor_id).first()
+    if floor is not None:
+        policy = (
+            db.query(models.Policy)
+            .filter(models.Policy.office_id == floor.office_id)
+            .first()
+        )
+        if policy is not None:
+            today = date.today()
+            reservation_date = payload.reservation_date
+
+            # min_days_ahead validation
+            if reservation_date < today + timedelta(days=policy.min_days_ahead):
+                raise ValueError(
+                    f"Бронирование возможно не ранее чем за {policy.min_days_ahead} дней вперёд"
+                )
+
+            # max_days_ahead validation
+            if reservation_date > today + timedelta(days=policy.max_days_ahead):
+                raise ValueError(
+                    f"Бронирование возможно не более чем за {policy.max_days_ahead} дней вперёд"
+                )
+
+            # duration validation (only when both times are provided and policy limits are set)
+            if payload.start_time and payload.end_time:
+                duration = (
+                    payload.end_time.hour * 60 + payload.end_time.minute
+                ) - (
+                    payload.start_time.hour * 60 + payload.start_time.minute
+                )
+                if policy.min_duration_minutes is not None and duration < policy.min_duration_minutes:
+                    raise ValueError(
+                        f"Минимальная длительность брони — {policy.min_duration_minutes} минут"
+                    )
+                if policy.max_duration_minutes is not None and duration > policy.max_duration_minutes:
+                    raise ValueError(
+                        f"Максимальная длительность брони — {policy.max_duration_minutes} минут"
+                    )
 
     # Lock active reservations for this desk/date to check overlaps atomically
     active = (
@@ -417,6 +478,150 @@ def delete_policy(db: Session, policy_id: int) -> None:
         raise KeyError("policy")
     db.delete(policy)
     db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Analytics
+# ---------------------------------------------------------------------------
+
+def get_analytics(db: Session) -> dict:
+    today = date.today()
+
+    # Total active reservations for today
+    total_today = (
+        db.query(func.count(models.Reservation.id))
+        .filter(
+            models.Reservation.reservation_date == today,
+            models.Reservation.status == "active",
+        )
+        .scalar()
+        or 0
+    )
+
+    # Total active / cancelled (all time)
+    total_active = (
+        db.query(func.count(models.Reservation.id))
+        .filter(models.Reservation.status == "active")
+        .scalar()
+        or 0
+    )
+    total_cancelled = (
+        db.query(func.count(models.Reservation.id))
+        .filter(models.Reservation.status == "cancelled")
+        .scalar()
+        or 0
+    )
+
+    # No-show rate: cancelled without check-in / all past reservations
+    past_total = (
+        db.query(func.count(models.Reservation.id))
+        .filter(models.Reservation.reservation_date < today)
+        .scalar()
+        or 0
+    )
+    past_noshow = (
+        db.query(func.count(models.Reservation.id))
+        .filter(
+            models.Reservation.reservation_date < today,
+            models.Reservation.status == "cancelled",
+            models.Reservation.checked_in_at.is_(None),
+        )
+        .scalar()
+        or 0
+    )
+    noshow_rate = round(past_noshow / past_total * 100, 1) if past_total > 0 else 0.0
+
+    # Occupancy by office
+    offices = db.query(models.Office).all()
+    occupancy_by_office = []
+    for office in offices:
+        total_desks = (
+            db.query(func.count(models.Desk.id))
+            .join(models.Floor, models.Desk.floor_id == models.Floor.id)
+            .filter(models.Floor.office_id == office.id)
+            .scalar()
+            or 0
+        )
+        booked_today = (
+            db.query(func.count(models.Reservation.id))
+            .join(models.Desk, models.Reservation.desk_id == models.Desk.id)
+            .join(models.Floor, models.Desk.floor_id == models.Floor.id)
+            .filter(
+                models.Floor.office_id == office.id,
+                models.Reservation.reservation_date == today,
+                models.Reservation.status == "active",
+            )
+            .scalar()
+            or 0
+        )
+        pct = round(booked_today / total_desks * 100, 1) if total_desks > 0 else 0.0
+        occupancy_by_office.append(
+            {
+                "office_id": office.id,
+                "office_name": office.name,
+                "total_desks": total_desks,
+                "booked_today": booked_today,
+                "occupancy_pct": pct,
+            }
+        )
+
+    # Top 5 desks by booking count (active reservations only)
+    top_desks_q = (
+        db.query(
+            models.Desk.id,
+            models.Desk.label,
+            models.Floor.name.label("floor_name"),
+            models.Office.name.label("office_name"),
+            func.count(models.Reservation.id).label("total"),
+        )
+        .join(models.Reservation, models.Reservation.desk_id == models.Desk.id)
+        .join(models.Floor, models.Floor.id == models.Desk.floor_id)
+        .join(models.Office, models.Office.id == models.Floor.office_id)
+        .filter(models.Reservation.status == "active")
+        .group_by(
+            models.Desk.id,
+            models.Desk.label,
+            models.Floor.name,
+            models.Office.name,
+        )
+        .order_by(desc("total"))
+        .limit(5)
+        .all()
+    )
+    top_desks = [
+        {
+            "desk_id": r.id,
+            "label": r.label,
+            "floor_name": r.floor_name,
+            "office_name": r.office_name,
+            "total": r.total,
+        }
+        for r in top_desks_q
+    ]
+
+    # Top 5 users by booking count (active reservations only)
+    top_users_q = (
+        db.query(
+            models.Reservation.user_id,
+            func.count(models.Reservation.id).label("total"),
+        )
+        .filter(models.Reservation.status == "active")
+        .group_by(models.Reservation.user_id)
+        .order_by(desc("total"))
+        .limit(5)
+        .all()
+    )
+    top_users = [{"user_id": r.user_id, "total": r.total} for r in top_users_q]
+
+    return {
+        "total_today": total_today,
+        "total_active": total_active,
+        "total_cancelled": total_cancelled,
+        "noshow_rate": noshow_rate,
+        "occupancy_by_office": occupancy_by_office,
+        "top_desks": top_desks,
+        "top_users": top_users,
+    }
 
 
 # ---------------------------------------------------------------------------

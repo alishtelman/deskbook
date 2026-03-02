@@ -180,6 +180,29 @@ class PolicyUpdate(BaseModel):
             self.name = _strip(self.name) or ""
 
 
+class DeskStat(BaseModel):
+    desk_id: int
+    label: str
+    floor_name: str
+    office_name: str
+    total: int
+
+
+class UserStat(BaseModel):
+    user_id: str
+    total: int
+
+
+class AnalyticsResponse(BaseModel):
+    total_today: int
+    total_active: int
+    total_cancelled: int
+    noshow_rate: float
+    occupancy_by_office: list[dict]
+    top_desks: list[DeskStat]
+    top_users: list[UserStat]
+
+
 class Message(BaseModel):
     message: str
 

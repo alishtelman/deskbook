@@ -30,7 +30,20 @@
 - `POST /checkin/{qr_token}?user_id=`: public check-in endpoint
 - `cancel_noshow_reservations`: scheduled every 1 min, walks Reservation->Desk->Floor->Office->Policy chain for per-office timeout
 
+## Phase 3 Features Added
+- `POST /reservations` now enforces Policy rules (min/max_days_ahead, min/max_duration_minutes) before creating a booking
+  - Policy lookup: desk -> floor -> office -> Policy.office_id match; skips if no policy found
+  - Raises ValueError (caught as 409) with Russian-language user-facing messages
+- `GET /reservations` accepts 5 new query params: user_id, date_from, date_to, office_id, status
+  - office_id filter joins Reservation -> Desk -> Floor to filter by office
+  - Results ordered by reservation_date DESC, id DESC
+- `GET /analytics` (admin-only): returns AnalyticsResponse with total_today, total_active, total_cancelled, noshow_rate, occupancy_by_office, top_desks, top_users
+- New schemas in schemas.py: DeskStat, UserStat, AnalyticsResponse (placed before Message class)
+
 ## Patterns
 - Background scheduler: AsyncIOScheduler started in lifespan, `run_noshow_check` creates its own SessionLocal session (not injected)
 - qrcode imported lazily inside endpoint handler to avoid import-time failure if package missing
 - `SessionLocal` is exported from database.py and imported directly in main.py for the scheduler job
+- `func` and `desc` are imported from sqlalchemy in crud.py; `func` is also in models.py separately (both needed independently)
+- Analytics duration computation uses integer arithmetic on .hour/.minute (not timedelta) to avoid time arithmetic pitfalls with time objects
+- Analytics queries use scalar() for counts; occupancy loops over offices rather than a group-by-office aggregate

@@ -361,9 +361,16 @@ async def check_availability(
 async def list_reservations(
     desk_id: Optional[int] = Query(default=None),
     reservation_date: Optional[date] = Query(default=None),
+    user_id: Optional[str] = Query(default=None),
+    date_from: Optional[date] = Query(default=None),
+    date_to: Optional[date] = Query(default=None),
+    office_id: Optional[int] = Query(default=None),
+    status: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
 ) -> list[models.Reservation]:
-    return crud.list_reservations(db, desk_id, reservation_date)
+    return crud.list_reservations(
+        db, desk_id, reservation_date, user_id, date_from, date_to, office_id, status
+    )
 
 
 @app.post("/reservations", response_model=schemas.Reservation, status_code=status.HTTP_201_CREATED)
@@ -388,6 +395,15 @@ async def cancel_reservation(
         return crud.cancel_reservation(db, reservation_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Reservation not found")
+
+
+# ---------------------------------------------------------------------------
+# Analytics
+# ---------------------------------------------------------------------------
+
+@app.get("/analytics", response_model=schemas.AnalyticsResponse, dependencies=[Depends(require_admin)])
+async def get_analytics(db: Session = Depends(get_db)) -> schemas.AnalyticsResponse:
+    return crud.get_analytics(db)
 
 
 # ---------------------------------------------------------------------------

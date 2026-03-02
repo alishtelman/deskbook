@@ -42,6 +42,7 @@
         <button class="nav-item" data-tab="desks">🪑 Рабочие места</button>
         <button class="nav-item" data-tab="policies">📋 Политики</button>
         <button class="nav-item" data-tab="reservations">📅 Бронирования</button>
+        <button class="nav-item" data-tab="analytics">📊 Аналитика</button>
       </nav>
       <div class="sidebar-footer">
         <div class="username" id="sidebar-username"></div>
@@ -137,6 +138,32 @@
             </div>
           </div>
           <button id="upload-plan-btn" class="btn btn-primary" style="margin-top:16px">Загрузить план</button>
+        </div>
+
+        <!-- Placement editor -->
+        <div class="form-panel" style="margin-top:12px" id="placement-panel">
+          <h3>Редактор размещения столов</h3>
+          <div class="field" style="max-width:300px">
+            <label>Этаж</label>
+            <select id="placement-floor-select"><option value="">Выберите этаж</option></select>
+          </div>
+          <div id="placement-area" style="margin-top:16px;display:none">
+            <p style="font-size:13px;color:var(--text-2);margin-bottom:8px">
+              Нажмите на стол в списке, затем кликните на план чтобы разместить его.
+            </p>
+            <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap">
+              <div style="position:relative;display:inline-block;flex-shrink:0;max-width:600px">
+                <img id="placement-plan-img" style="max-width:100%;display:block;border-radius:8px;border:1px solid var(--border)" alt="план">
+                <div id="placement-overlay" style="position:absolute;inset:0;cursor:crosshair"></div>
+              </div>
+              <div style="min-width:200px">
+                <p style="font-size:13px;font-weight:600;margin-bottom:8px">Не размещены:</p>
+                <div id="unplaced-desks" style="display:flex;flex-direction:column;gap:6px"></div>
+                <p id="all-placed-msg" class="empty hidden" style="padding:8px 0">Все столы размещены</p>
+              </div>
+            </div>
+          </div>
+          <div id="placement-no-plan" class="empty hidden">У выбранного этажа нет плана. Сначала загрузите PNG.</div>
         </div>
       </div>
 
@@ -261,6 +288,29 @@
           <h2 style="font-size:20px;font-weight:700">Бронирования</h2>
           <button id="refresh-reservations" class="btn btn-secondary btn-sm">Обновить</button>
         </div>
+
+        <!-- Filter bar -->
+        <div class="form-panel" style="margin-bottom:16px">
+          <div class="grid-4" style="gap:12px">
+            <div class="field"><label>Офис</label><select id="filter-office"><option value="">Все офисы</option></select></div>
+            <div class="field"><label>Дата от</label><input id="filter-date-from" type="date"></div>
+            <div class="field"><label>Дата до</label><input id="filter-date-to" type="date"></div>
+            <div class="field"><label>Пользователь</label><input id="filter-user" type="text" placeholder="логин"></div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <div class="field" style="flex:0 0 auto">
+              <label>Статус</label>
+              <select id="filter-status">
+                <option value="">Все</option>
+                <option value="active">Активные</option>
+                <option value="cancelled">Отменённые</option>
+              </select>
+            </div>
+            <button id="apply-filters-btn" class="btn btn-primary btn-sm" style="align-self:end">Применить</button>
+            <button id="reset-filters-btn" class="btn btn-secondary btn-sm" style="align-self:end">Сбросить</button>
+          </div>
+        </div>
+
         <div class="table-wrapper">
           <table>
             <thead>
@@ -278,6 +328,62 @@
             </thead>
             <tbody id="reservations-body"></tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- Analytics tab -->
+      <div id="tab-analytics" class="tab-content hidden">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+          <h2 style="font-size:20px;font-weight:700">Аналитика</h2>
+          <button id="refresh-analytics" class="btn btn-secondary btn-sm">Обновить</button>
+        </div>
+
+        <!-- KPI cards -->
+        <div class="grid-4" style="margin-bottom:24px">
+          <div class="card" style="padding:20px">
+            <p style="font-size:13px;color:var(--text-2);margin-bottom:6px">Бронирований сегодня</p>
+            <p id="kpi-today" style="font-size:32px;font-weight:700;color:var(--accent)">—</p>
+          </div>
+          <div class="card" style="padding:20px">
+            <p style="font-size:13px;color:var(--text-2);margin-bottom:6px">Активных броней</p>
+            <p id="kpi-active" style="font-size:32px;font-weight:700;color:#16a34a">—</p>
+          </div>
+          <div class="card" style="padding:20px">
+            <p style="font-size:13px;color:var(--text-2);margin-bottom:6px">Отменено всего</p>
+            <p id="kpi-cancelled" style="font-size:32px;font-weight:700;color:#dc2626">—</p>
+          </div>
+          <div class="card" style="padding:20px">
+            <p style="font-size:13px;color:var(--text-2);margin-bottom:6px">No-show rate</p>
+            <p id="kpi-noshow" style="font-size:32px;font-weight:700;color:#d97706">—</p>
+          </div>
+        </div>
+
+        <!-- Occupancy by office -->
+        <div class="card" style="margin-bottom:20px">
+          <h3 style="font-size:16px;font-weight:600;margin-bottom:16px">Загруженность офисов сегодня</h3>
+          <div id="occupancy-list"></div>
+        </div>
+
+        <!-- Top desks & users side by side -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+          <div class="card">
+            <h3 style="font-size:16px;font-weight:600;margin-bottom:16px">Топ рабочих мест</h3>
+            <div class="table-wrapper">
+              <table>
+                <thead><tr><th>Место</th><th>Этаж</th><th>Офис</th><th>Бронирований</th></tr></thead>
+                <tbody id="top-desks-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <h3 style="font-size:16px;font-weight:600;margin-bottom:16px">Топ пользователей</h3>
+            <div class="table-wrapper">
+              <table>
+                <thead><tr><th>Пользователь</th><th>Бронирований</th></tr></thead>
+                <tbody id="top-users-body"></tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </div>
     </main>
