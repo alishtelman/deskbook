@@ -30,8 +30,18 @@
   const form = document.getElementById("login-form");
   const errorMsg = document.getElementById("error-msg");
 
-  if (localStorage.getItem("user_token") && localStorage.getItem("user_username")) {
+  function isTokenExpired(token) {
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1]));
+      return payload.exp * 1000 < Date.now();
+    } catch { return true; }
+  }
+  const _t = localStorage.getItem("user_token");
+  if (_t && !isTokenExpired(_t) && localStorage.getItem("user_username")) {
     window.location.href = "./index.html";
+  } else {
+    localStorage.removeItem("user_token");
+    localStorage.removeItem("user_username");
   }
 
   form.addEventListener("submit", async (e) => {

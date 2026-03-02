@@ -1,9 +1,19 @@
 const API_BASE = "http://localhost:8000";
 
+// JWT expiry check
+function isTokenExpired(token) {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    return payload.exp * 1000 < Date.now();
+  } catch { return true; }
+}
+
 // Auth guard
 const _token = localStorage.getItem("user_token");
 const _username = localStorage.getItem("user_username");
-if (!_token || !_username) {
+if (!_token || !_username || isTokenExpired(_token)) {
+  localStorage.removeItem("user_token");
+  localStorage.removeItem("user_username");
   window.location.href = "./login.html";
 }
 
