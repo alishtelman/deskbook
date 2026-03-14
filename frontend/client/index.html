@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>DeskBook — Бронирование мест</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <link rel="stylesheet" href="./styles.css">
   <style>
@@ -37,7 +38,11 @@
 
     <!-- Compact booking params (1 row) -->
     <div class="params-bar">
-      <div class="params-row">
+      <div class="params-mobile-summary" id="params-mobile-summary">
+        <div class="params-mobile-summary-text" id="params-summary-text">Интервал брони: —</div>
+        <button id="params-edit-btn" class="btn btn-secondary btn-sm" aria-label="Изменить параметры бронирования">Изменить</button>
+      </div>
+      <div class="params-row" id="params-row">
         <div class="param-field param-office">
           <label for="office-select">Офис</label>
           <select id="office-select"><option value="">Выберите офис</option></select>
@@ -58,14 +63,25 @@
           <label for="end-time">Конец</label>
           <input id="end-time" type="time" value="18:00">
         </div>
+        <div class="param-field param-quick">
+          <label>Быстро</label>
+          <div class="quick-date-chips" id="quick-date-chips">
+            <button type="button" class="quick-date-chip active" id="quick-date-today">Сегодня</button>
+            <button type="button" class="quick-date-chip" id="quick-date-tomorrow">Завтра</button>
+            <button type="button" class="quick-date-chip" id="quick-date-custom">Дата</button>
+          </div>
+        </div>
         <input id="user-id" type="hidden">
         <div class="params-actions">
           <button id="policies-toggle" class="btn btn-secondary btn-sm">Правила ▾</button>
-          <button id="fav-filter-btn" class="btn btn-secondary btn-sm">☆ Избранные</button>
-          <button id="team-filter-btn" class="btn btn-secondary btn-sm">👥 Моя команда</button>
         </div>
       </div>
+      <div class="params-mobile-actions" id="params-mobile-actions">
+        <button id="params-cancel-btn" class="btn btn-secondary btn-sm" aria-label="Закрыть параметры без применения">Отмена</button>
+        <button id="params-apply-btn" class="btn btn-primary btn-sm" aria-label="Применить параметры бронирования">Применить</button>
+      </div>
     </div>
+    <div id="params-mobile-backdrop" class="params-mobile-backdrop" aria-hidden="true"></div>
 
     <!-- Policies (accordion, hidden by default) -->
     <div id="policies-accordion">
@@ -80,11 +96,21 @@
     <!-- Main two-column layout -->
     <div class="main-layout">
 
-      <!-- Left: Map (70%) — full-frame, controls float over the map -->
+      <!-- Left: Map (70%) -->
       <div class="map-column">
         <div class="card" id="floor-plan-card">
+          <div class="card-header">
+            <h2 class="card-title"><i data-lucide="map" style="width:16px;height:16px"></i> План этажа</h2>
+          </div>
           <div id="map-legend" class="map-legend" style="display:none"></div>
-          <div id="space-filter-bar" class="space-filter-bar" style="display:none"></div>
+          <div class="map-status-legend">
+            <span class="legend-item"><span class="legend-dot status-available"></span>Свободно</span>
+            <span class="legend-item"><span class="legend-dot status-mine"></span>Моё</span>
+            <span class="legend-item"><span class="legend-dot status-occupied"></span>Занято</span>
+            <span class="legend-item"><span class="legend-dot status-blocked"></span>Недоступно</span>
+          </div>
+          <div id="time-window-indicator" class="time-window-indicator">Просмотр: —</div>
+          <div id="space-filter-bar" class="filter-chip-row" style="display:none"></div>
           <div class="search-bar" id="colleague-search-bar">
             <div class="search-input-wrap">
               <i data-lucide="search" style="width:14px;height:14px;color:var(--text-3)"></i>
@@ -95,16 +121,16 @@
           </div>
           <div class="map-zoom-wrapper" id="map-zoom-wrapper">
             <div class="map-controls" id="map-controls" style="display:none">
-              <button class="map-ctrl-btn" id="zoom-in-btn" title="Увеличить">+</button>
-              <button class="map-ctrl-btn" id="zoom-out-btn" title="Уменьшить">−</button>
-              <button class="map-ctrl-btn" id="focus-my-desk-btn" title="Моё место" style="font-size:14px;line-height:1">◎</button>
-              <button class="map-ctrl-btn" id="fit-mode-btn" title="По высоте — нажать: Вписать целиком">⊠</button>
+              <button class="map-ctrl-btn" id="zoom-in-btn" title="Увеличить" aria-label="Увеличить карту">+</button>
+              <button class="map-ctrl-btn" id="zoom-out-btn" title="Уменьшить" aria-label="Уменьшить карту">−</button>
+              <button class="map-ctrl-btn" id="focus-my-desk-btn" title="Моё место" aria-label="Показать моё место" style="font-size:14px;line-height:1">◎</button>
+              <button class="map-ctrl-btn" id="fit-reset-btn" title="Вписать целиком" aria-label="Вписать карту целиком">FIT</button>
+              <button class="map-ctrl-btn" id="fit-height-btn" title="По высоте" aria-label="Подогнать карту по высоте">H</button>
               <span class="zoom-indicator" id="zoom-indicator">100%</span>
             </div>
             <div class="map-zoom-content" id="map-zoom-content">
               <div id="map-image-frame">
                 <img id="floor-plan-image" alt="План этажа">
-                <div id="floor-plan-overlay" class="plan-overlay" style="pointer-events:none"></div>
                 <svg id="desk-svg-overlay" class="plan-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg"></svg>
               </div>
             </div>
@@ -113,8 +139,9 @@
       </div>
 
       <!-- Right: Panel (30%) -->
-      <div class="panel-column" id="panel-column">
+      <div class="panel-column" id="panel-column" data-sheet-state="collapsed">
         <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-mini-summary" id="sheet-mini-summary">Панель бронирования</div>
 
         <!-- Desk detail (shown when desk is selected) -->
         <div class="card desk-detail-card" id="desk-detail-card">
@@ -157,7 +184,7 @@
   <div id="messages" class="messages-toast"></div>
 
   <!-- Mobile: open panel sheet -->
-  <button class="sheet-toggle-btn" id="sheet-toggle-btn" aria-label="Открыть панель">
+  <button class="sheet-toggle-btn" id="sheet-toggle-btn" aria-label="Открыть панель" aria-expanded="false">
     <i data-lucide="layout-panel-right" style="width:20px;height:20px"></i>
   </button>
 

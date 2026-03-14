@@ -26,20 +26,55 @@ const policyList          = document.getElementById("policy-list");
 const policiesAccordion   = document.getElementById("policies-accordion");
 const floorPlanCard       = document.getElementById("floor-plan-card");
 const floorPlanImage      = document.getElementById("floor-plan-image");
-const floorPlanOverlay    = document.getElementById("floor-plan-overlay");
 const deskSvgOverlay      = document.getElementById("desk-svg-overlay");
 const mapZoomWrapper      = document.getElementById("map-zoom-wrapper");
 const mapZoomContent      = document.getElementById("map-zoom-content");
 const mapSidePanel        = document.getElementById("desk-detail-content");
 const deskDetailCard      = document.getElementById("desk-detail-card");
 const mapControls         = document.getElementById("map-controls");
+const fitResetBtn         = document.getElementById("fit-reset-btn");
+const fitHeightBtn        = document.getElementById("fit-height-btn");
 const userInput           = document.getElementById("user-id");
 const dateInput           = document.getElementById("reservation-date");
 const startInput          = document.getElementById("start-time");
 const endInput            = document.getElementById("end-time");
+const quickDateTodayBtn   = document.getElementById("quick-date-today");
+const quickDateTomorrowBtn = document.getElementById("quick-date-tomorrow");
+const quickDateCustomBtn  = document.getElementById("quick-date-custom");
+const timeWindowIndicator = document.getElementById("time-window-indicator");
 const myBookingsContainer = document.getElementById("my-bookings");
 const loggedAsEl          = document.getElementById("logged-as");
 const logoutBtn           = document.getElementById("logout-btn");
+const paramsEditBtn       = document.getElementById("params-edit-btn");
+const paramsApplyBtn      = document.getElementById("params-apply-btn");
+const paramsCancelBtn     = document.getElementById("params-cancel-btn");
+const paramsBackdrop      = document.getElementById("params-mobile-backdrop");
+const paramsSummaryText   = document.getElementById("params-summary-text");
+const appLayoutEl         = document.querySelector(".app-layout");
+const panelColumnEl       = document.getElementById("panel-column");
+const sheetToggleBtn      = document.getElementById("sheet-toggle-btn");
+const sheetHandleEl       = document.querySelector("#panel-column .sheet-handle");
+const sheetMiniSummaryEl  = document.getElementById("sheet-mini-summary");
+
+const UI_PALETTE = {
+  wall: "#2f343b",
+  partition: "#4b5563",
+  door: "#1f2937",
+  status: {
+    available: "#16a34a",
+    mine: "#2563eb",
+    occupied: "#dc2626",
+    blocked: "#d97706",
+  },
+};
+
+const SPACE_COLORS_CLIENT = {
+  desk: "#2563eb",
+  meeting_room: "#7c3aed",
+  call_room: "#0891b2",
+  open_space: "#16a34a",
+  lounge: "#d97706",
+};
 
 const state = {
   offices: [],
@@ -53,12 +88,307 @@ const state = {
   myDepartment: null,     // current user's department
 };
 
+let _datePreset = "today"; // today | tomorrow | custom
+const LS_KEYS = {
+  fitMode: "dk_fit_mode",
+  statusFilter: "dk_status_filter",
+  spaceFilters: "dk_space_filters",
+  favFilter: "dk_fav_filter",
+  teamFilter: "dk_team_filter",
+  sheetState: "dk_sheet_state",
+};
+const DESK_STATUS_FILTERS = ["all", "available", "mine", "occupied", "blocked"];
+const DESK_STATUS_LABELS = {
+  all: "Все",
+  available: "Свободно",
+  mine: "Моё",
+  occupied: "Занято",
+  blocked: "Недоступно",
+};
+const SHEET_STATES = ["collapsed", "half", "full"];
+
+let _statusFilter = DESK_STATUS_FILTERS.includes(localStorage.getItem(LS_KEYS.statusFilter))
+  ? localStorage.getItem(LS_KEYS.statusFilter)
+  : "all";
+let _favFilterActive = localStorage.getItem(LS_KEYS.favFilter) === "1";
+let _teamFilterActive = localStorage.getItem(LS_KEYS.teamFilter) === "1";
+let _activeSpaceFilters = new Set();
+let _sheetState = SHEET_STATES.includes(localStorage.getItem(LS_KEYS.sheetState))
+  ? localStorage.getItem(LS_KEYS.sheetState)
+  : "collapsed";
+let _activePanelTab = "floor";
+let _sheetInteractionsBound = false;
+let _paramsSheetBound = false;
+let _myBookingsCount = 0;
+
+try {
+  const rawSpaceFilters = JSON.parse(localStorage.getItem(LS_KEYS.spaceFilters) || "[]");
+  if (Array.isArray(rawSpaceFilters)) {
+    _activeSpaceFilters = new Set(rawSpaceFilters.map((x) => String(x || "").trim()).filter(Boolean));
+  }
+} catch {
+  _activeSpaceFilters = new Set();
+}
+
+function _isMobileViewport() {
+  return window.matchMedia("(max-width: 767px)").matches;
+}
+
+function _nextSheetStateUp(stateName) {
+  if (stateName === "collapsed") return "half";
+  if (stateName === "half") return "full";
+  return "full";
+}
+
+function _nextSheetStateDown(stateName) {
+  if (stateName === "full") return "half";
+  if (stateName === "half") return "collapsed";
+  return "collapsed";
+}
+
+function _deskEntriesMatchingFilters() {
+  const teamDeskIds = _teamDeskIdsForCurrentWindow();
+  return (state.desks || [])
+    .map((desk) => ({ desk, visual: _deskAvailabilityState(desk) }))
+    .filter(({ desk, visual }) => _deskPassesFilters(desk, visual.kind, teamDeskIds));
+}
+
+function _reservationsMatchingFilters() {
+  const teamDeskIds = _teamDeskIdsForCurrentWindow();
+  return (state.floorReservations || [])
+    .filter(_reservationMatchesCurrentWindow)
+    .filter((r) => {
+      const desk = state.desks.find((d) => d.id === r.desk_id);
+      if (!desk) return false;
+      const visual = _deskAvailabilityState(desk);
+      return _deskPassesFilters(desk, visual.kind, teamDeskIds);
+    });
+}
+
+function updateSheetMiniSummary() {
+  if (!sheetMiniSummaryEl) return;
+  if (_activePanelTab === "bookings") {
+    sheetMiniSummaryEl.textContent = `Мои брони: ${_myBookingsCount}`;
+    return;
+  }
+
+  const label = _statusFilter === "all" ? "На этаже" : "Мест по фильтру";
+  const count = _statusFilter === "all"
+    ? _reservationsMatchingFilters().length
+    : _deskEntriesMatchingFilters().length;
+  sheetMiniSummaryEl.textContent = `${label}: ${count}`;
+}
+
+function setSheetState(nextState, opts = {}) {
+  const { persist = true } = opts;
+  const normalized = SHEET_STATES.includes(nextState) ? nextState : "collapsed";
+  _sheetState = normalized;
+  if (persist) localStorage.setItem(LS_KEYS.sheetState, normalized);
+
+  if (!panelColumnEl) return;
+  const renderedState = _isMobileViewport() ? normalized : "full";
+  panelColumnEl.dataset.sheetState = normalized;
+  panelColumnEl.classList.remove("sheet-collapsed", "sheet-half", "sheet-full");
+  panelColumnEl.classList.add(`sheet-${renderedState}`);
+
+  if (sheetToggleBtn) {
+    const expanded = renderedState !== "collapsed";
+    sheetToggleBtn.classList.toggle("sheet-open", expanded);
+    sheetToggleBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
+    sheetToggleBtn.setAttribute("aria-label", expanded ? "Свернуть панель" : "Открыть панель");
+  }
+  updateSheetMiniSummary();
+}
+
+function cycleSheetState() {
+  if (!_isMobileViewport()) return;
+  if (_sheetState === "collapsed") setSheetState("half");
+  else if (_sheetState === "half") setSheetState("full");
+  else setSheetState("collapsed");
+}
+
+function setParamsSheetOpen(isOpen) {
+  if (!appLayoutEl) return;
+  const shouldOpen = Boolean(isOpen) && _isMobileViewport();
+  appLayoutEl.classList.toggle("params-sheet-open", shouldOpen);
+  paramsBackdrop?.setAttribute("aria-hidden", shouldOpen ? "false" : "true");
+}
+
+function setActivePanelTab(tabName, opts = {}) {
+  const { promoteMobile = false } = opts;
+  const nextTab = tabName === "bookings" ? "bookings" : "floor";
+  _activePanelTab = nextTab;
+
+  document.querySelectorAll(".panel-tab-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.tab === nextTab);
+  });
+  const floorEl = document.getElementById("colleagues-section");
+  const bookingsEl = document.getElementById("panel-bookings-tab");
+  if (floorEl) floorEl.style.display = nextTab === "floor" ? "" : "none";
+  if (bookingsEl) bookingsEl.style.display = nextTab === "bookings" ? "" : "none";
+
+  if (promoteMobile && _isMobileViewport()) {
+    if (nextTab === "bookings") setSheetState("full");
+    else if (_sheetState === "collapsed") setSheetState("half");
+  }
+
+  updateSheetMiniSummary();
+}
+
+function initParamsSheetInteractions() {
+  if (_paramsSheetBound) return;
+  _paramsSheetBound = true;
+
+  paramsEditBtn?.addEventListener("click", () => {
+    setParamsSheetOpen(true);
+  });
+  paramsCancelBtn?.addEventListener("click", () => {
+    setParamsSheetOpen(false);
+  });
+  paramsBackdrop?.addEventListener("click", () => {
+    setParamsSheetOpen(false);
+  });
+  paramsApplyBtn?.addEventListener("click", () => {
+    setParamsSheetOpen(false);
+    syncDatePresetFromInput();
+    updateTimeWindowIndicator();
+    debouncedRefresh();
+  });
+}
+
+function initMobileSheetInteractions() {
+  if (_sheetInteractionsBound) return;
+  _sheetInteractionsBound = true;
+
+  sheetToggleBtn?.addEventListener("click", () => {
+    cycleSheetState();
+  });
+
+  sheetMiniSummaryEl?.addEventListener("click", () => {
+    if (!_isMobileViewport()) return;
+    setSheetState(_sheetState === "collapsed" ? "half" : "full");
+  });
+
+  if (sheetHandleEl) {
+    let dragStartY = null;
+    let dragLastY = null;
+    let moved = false;
+
+    const onPointerMove = (event) => {
+      if (dragStartY == null) return;
+      dragLastY = event.clientY;
+      if (Math.abs(dragLastY - dragStartY) > 6) moved = true;
+    };
+
+    const onPointerUp = (event) => {
+      if (dragStartY == null) return;
+      const endY = dragLastY ?? event.clientY;
+      const delta = endY - dragStartY;
+      if (!moved || Math.abs(delta) < 24) {
+        setSheetState(_sheetState === "collapsed" ? "half" : _sheetState);
+      } else if (delta < 0) {
+        setSheetState(_nextSheetStateUp(_sheetState));
+      } else {
+        setSheetState(_nextSheetStateDown(_sheetState));
+      }
+      dragStartY = null;
+      dragLastY = null;
+      moved = false;
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+    };
+
+    sheetHandleEl.addEventListener("pointerdown", (event) => {
+      if (!_isMobileViewport()) return;
+      dragStartY = event.clientY;
+      dragLastY = event.clientY;
+      moved = false;
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+      window.addEventListener("pointercancel", onPointerUp);
+    });
+  }
+}
+
+function _isoLocalDate(d) {
+  const dt = d instanceof Date ? d : new Date();
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const day = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function _presetLabelByDate(isoDate) {
+  const today = _isoLocalDate(new Date());
+  const tomorrowDate = new Date();
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrow = _isoLocalDate(tomorrowDate);
+  if (isoDate === today) return "Сегодня";
+  if (isoDate === tomorrow) return "Завтра";
+  return "Дата";
+}
+
+function _humanDate(isoDate) {
+  if (!isoDate) return "—";
+  const dt = new Date(`${isoDate}T00:00:00`);
+  if (!Number.isFinite(dt.getTime())) return isoDate;
+  return dt.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+function _timeWindowText() {
+  const isoDate = String(dateInput?.value || "").trim();
+  const st = String(startInput?.value || "").trim() || "—";
+  const et = String(endInput?.value || "").trim() || "—";
+  const preset = _presetLabelByDate(isoDate);
+  const dateLabel = preset === "Дата" ? _humanDate(isoDate) : preset;
+  return `${dateLabel}, ${st}–${et}`;
+}
+
+function updateTimeWindowIndicator() {
+  if (!timeWindowIndicator) return;
+  timeWindowIndicator.textContent = `Просмотр: ${_timeWindowText()}`;
+  if (paramsSummaryText) {
+    paramsSummaryText.textContent = `Интервал брони: ${_timeWindowText()}`;
+  }
+}
+
+function _applyDatePresetButtons() {
+  quickDateTodayBtn?.classList.toggle("active", _datePreset === "today");
+  quickDateTomorrowBtn?.classList.toggle("active", _datePreset === "tomorrow");
+  quickDateCustomBtn?.classList.toggle("active", _datePreset === "custom");
+}
+
+function setDatePreset(mode, opts = {}) {
+  const next = mode === "tomorrow" ? "tomorrow" : mode === "custom" ? "custom" : "today";
+  _datePreset = next;
+  if (next === "today") {
+    dateInput.value = _isoLocalDate(new Date());
+  } else if (next === "tomorrow") {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    dateInput.value = _isoLocalDate(d);
+  }
+  _applyDatePresetButtons();
+  updateTimeWindowIndicator();
+  if (opts.refresh !== false) debouncedRefresh();
+}
+
+function syncDatePresetFromInput() {
+  const label = _presetLabelByDate(String(dateInput?.value || "").trim());
+  _datePreset = label === "Сегодня" ? "today" : label === "Завтра" ? "tomorrow" : "custom";
+  _applyDatePresetButtons();
+  updateTimeWindowIndicator();
+}
+
 // Init user info
 userInput.value = _username;
 loggedAsEl.textContent = _username;
-dateInput.value = new Date().toISOString().slice(0, 10);
+dateInput.value = _isoLocalDate(new Date());
 const userAvatarEl = document.getElementById("user-avatar");
 if (userAvatarEl) userAvatarEl.textContent = _username.slice(0, 2).toUpperCase();
+_applyDatePresetButtons();
+updateTimeWindowIndicator();
 
 function getToken() {
   return localStorage.getItem("user_token");
@@ -267,7 +597,7 @@ async function loadFloors(officeId) {
     for (const f of state.floors) {
       const opt = document.createElement("option");
       opt.value = f.id;
-      opt.textContent = f.plan_url ? `${f.name} ✦` : f.name;
+      opt.textContent = (f.plan_url || f.has_published_map || f.has_draft_map) ? `${f.name} ✦` : f.name;
       floorSelect.append(opt);
     }
     floorSelect.disabled = false;
@@ -297,54 +627,100 @@ async function loadDesks(floorId) {
   try {
     state.desks = await apiRequest(`/desks?floor_id=${floorId}`);
     await refreshAvailability();
+    if (_currentLayout) {
+      const imageFrame = document.getElementById("map-image-frame");
+      _renderInlineLayoutFloor(_currentLayout, imageFrame);
+    } else if (_currentRevision) {
+      const imageFrame = document.getElementById("map-image-frame");
+      _renderInlineSVGFloor(_currentRevision, imageFrame);
+    }
   } catch (e) {
     addMessage(`Места: ${e.message}`, "error");
   }
 }
 
 async function refreshAvailability() {
+  updateTimeWindowIndicator();
   const rd = dateInput.value;
   const st = startInput.value;
   const et = endInput.value;
-
-  // No date/time yet — render gray "unknown" dots silently, no error
   if (!rd || !st || !et) {
-    state.availability.clear();
-    renderPlanMarkersFiltered();
+    addMessage("Заполните дату и время.", "error");
     return;
   }
-
   state.availability.clear();
 
-  const uid = userInput?.value?.trim() || null;
-  const deskIds = state.desks.map((d) => d.id);
+  const availFetch = (async () => {
+    const deskIds = (state.desks || []).map((desk) => desk.id).filter((id) => Number.isFinite(Number(id)));
+    if (!deskIds.length) return;
+    const uid = userInput.value.trim();
 
-  const batchBody = { desk_ids: deskIds, reservation_date: rd, start_time: st, end_time: et };
-  if (uid) batchBody.user_id = uid;
+    try {
+      const payload = {
+        desk_ids: deskIds,
+        reservation_date: rd,
+        start_time: st,
+        end_time: et,
+      };
+      if (uid) payload.user_id = uid;
+      const batch = await apiRequest("/availability/batch", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      for (const item of (batch?.items || [])) {
+        state.availability.set(item.desk_id, {
+          available: Boolean(item.available),
+          reason: item.reason || null,
+        });
+      }
+      for (const deskId of deskIds) {
+        if (!state.availability.has(deskId)) {
+          state.availability.set(deskId, { available: false, reason: "No availability response" });
+        }
+      }
+      return;
+    } catch {
+      // Fallback to per-desk mode for backward compatibility.
+    }
+
+    await Promise.all(
+      state.desks.map(async (desk) => {
+        const qs = new URLSearchParams({
+          desk_id: String(desk.id),
+          reservation_date: rd,
+          start_time: st,
+          end_time: et,
+        });
+        if (uid) qs.append("user_id", uid);
+        try {
+          const result = await apiRequest(`/availability?${qs}`);
+          state.availability.set(desk.id, result);
+        } catch (e) {
+          state.availability.set(desk.id, { available: false, reason: e.message });
+        }
+      })
+    );
+  })();
 
   const floorId = floorSelect.value;
+  const resvFetch = (floorId
+    ? apiRequest(`/floors/${floorId}/reservations?date=${rd}`)
+    : Promise.resolve([])
+  ).then((all) => {
+    state.floorReservations = all;
+  }).catch(() => { state.floorReservations = []; });
 
-  const [, ] = await Promise.all([
-    // Single batch request instead of N individual requests
-    apiRequest("/availability/batch", { method: "POST", body: JSON.stringify(batchBody) })
-      .then((data) => {
-        data.results.forEach((item) => {
-          state.availability.set(item.desk_id, { available: item.available, reason: item.reason });
-        });
-      })
-      .catch(() => {
-        // Fallback: mark all as unknown on error
-        state.desks.forEach((d) => state.availability.set(d.id, { available: false, reason: "Ошибка" }));
-      }),
-
-    (floorId
-      ? apiRequest(`/floors/${floorId}/reservations?date=${rd}`)
-      : Promise.resolve([])
-    ).then((all) => { state.floorReservations = all; })
-     .catch(() => { state.floorReservations = []; }),
-  ]);
-
-  renderPlanMarkersFiltered();
+  await Promise.all([availFetch, resvFetch]);
+  renderFilterChips(state.desks || []);
+  if (_currentLayout) {
+    const imageFrame = document.getElementById("map-image-frame");
+    _renderInlineLayoutFloor(_currentLayout, imageFrame);
+  } else if (_currentRevision) {
+    const imageFrame = document.getElementById("map-image-frame");
+    _renderInlineSVGFloor(_currentRevision, imageFrame);
+  } else {
+    renderPlanMarkersFiltered();
+  }
   renderColleagues();
 }
 
@@ -408,13 +784,13 @@ async function reserveBatch(deskId, dates, startTime, endTime) {
       body: JSON.stringify({ desk_id: deskId, dates, start_time: startTime, end_time: endTime }),
     });
     const created = result.created?.length ?? 0;
-    const skipped = result.skipped ?? [];
-    if (skipped.length > 0) {
-      const dateList = skipped.map(d => {
+    const skippedDates = result.skipped ?? [];
+    if (skippedDates.length > 0) {
+      const dateList = skippedDates.map(d => {
         const dt = new Date(d + "T00:00:00");
         return dt.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
       }).join(", ");
-      addMessage(`Создано ${created} броней. Пропущено ${skipped.length}: ${dateList} — место занято.`, "info");
+      addMessage(`Создано ${created} броней. Пропущено ${skippedDates.length}: ${dateList} — место занято.`, "info");
     } else {
       addMessage(`Серия создана: ${created} бронирований.`, "success");
     }
@@ -448,9 +824,16 @@ let _zoomInitialized = false;
 // Explicit image bounds (set by fitFloorPlan, used by centerOnMarker)
 let _imgX = 0, _imgY = 0, _imgW = 0, _imgH = 0;
 // Fit mode: 'contain' fits whole image without upscaling (default), 'height' fills container height
-let _fitMode = 'contain';
+let _fitMode = localStorage.getItem(LS_KEYS.fitMode) === "height" ? "height" : "contain";
 // Pending desk to focus after floor plan loads (used by navigateToDesk)
 let _pendingFocusDeskId = null;
+let _pendingFocusWithArrow = false;
+// Active controller for inline SVG zoom (layout/published SVG modes)
+let _inlineZoomController = null;
+
+function _isMapControlsEvent(e) {
+  return !!(e?.target && typeof e.target.closest === "function" && e.target.closest("#map-controls"));
+}
 
 function _applyTransform() {
   if (mapZoomContent) {
@@ -466,6 +849,101 @@ function _applyTransform() {
   if (ind) ind.textContent = Math.round(_zoom * 100) + "%";
 }
 
+function updateFitButtonsUI() {
+  fitResetBtn?.classList.toggle("active", _fitMode === "contain");
+  fitHeightBtn?.classList.toggle("active", _fitMode === "height");
+}
+
+function setGlobalFitMode(nextMode) {
+  _fitMode = nextMode === "height" ? "height" : "contain";
+  localStorage.setItem(LS_KEYS.fitMode, _fitMode);
+  updateFitButtonsUI();
+}
+
+function _myReservationForCurrentWindow() {
+  return (state.floorReservations || []).find(
+    (r) => r.user_id === _username && r.status === "active" && _reservationMatchesCurrentWindow(r),
+  ) || null;
+}
+
+function updateMyDeskFocusButton() {
+  const btn = document.getElementById("focus-my-desk-btn");
+  if (!btn) return;
+  const hasMine = !!_myReservationForCurrentWindow();
+  btn.disabled = !hasMine;
+  btn.title = hasMine ? "Моё место" : "Нет активной брони на выбранный интервал";
+  btn.setAttribute("aria-disabled", hasMine ? "false" : "true");
+}
+
+function mapZoomIn() {
+  if (_inlineZoomController) {
+    _inlineZoomController.zoomBy(1.16);
+    return;
+  }
+  if (!mapZoomWrapper) return;
+  const cx = mapZoomWrapper.clientWidth / 2;
+  const cy = mapZoomWrapper.clientHeight / 2;
+  const prevZoom = _zoom;
+  _zoom = Math.min(4, Math.max(_minZoom, _zoom * 1.16));
+  _tx = cx - (cx - _tx) / prevZoom * _zoom;
+  _ty = cy - (cy - _ty) / prevZoom * _zoom;
+  _applyTransform();
+  mapZoomContent.style.cursor = _zoom > _minZoom ? "grab" : "default";
+}
+
+function mapZoomOut() {
+  if (_inlineZoomController) {
+    _inlineZoomController.zoomBy(1 / 1.16);
+    return;
+  }
+  if (!mapZoomWrapper) return;
+  const cx = mapZoomWrapper.clientWidth / 2;
+  const cy = mapZoomWrapper.clientHeight / 2;
+  const prevZoom = _zoom;
+  _zoom = Math.min(4, Math.max(_minZoom, _zoom / 1.16));
+  _tx = cx - (cx - _tx) / prevZoom * _zoom;
+  _ty = cy - (cy - _ty) / prevZoom * _zoom;
+  _applyTransform();
+  mapZoomContent.style.cursor = _zoom > _minZoom ? "grab" : "default";
+}
+
+function focusMyDeskOnMap() {
+  const myResv = _myReservationForCurrentWindow();
+  if (!myResv) {
+    addMessage("Нет активной брони на выбранный интервал", "info");
+    return;
+  }
+  highlightDesk(myResv.desk_id);
+  centerOnMarker(myResv.desk_id);
+  const markerEl = _findMarkerElByDeskId(myResv.desk_id);
+  const deskObj = state.desks.find((d) => d.id === myResv.desk_id);
+  if (markerEl && deskObj) showSidePanel(markerEl, deskObj);
+}
+
+let _mapControlsBound = false;
+function bindMapControlsOnce() {
+  if (_mapControlsBound) return;
+  _mapControlsBound = true;
+  mapControls?.addEventListener("pointerdown", (e) => e.stopPropagation());
+  mapControls?.addEventListener("mousedown", (e) => e.stopPropagation());
+  mapControls?.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+  mapControls?.addEventListener("click", (e) => e.stopPropagation());
+  document.getElementById("zoom-in-btn")?.addEventListener("click", mapZoomIn);
+  document.getElementById("zoom-out-btn")?.addEventListener("click", mapZoomOut);
+  document.getElementById("focus-my-desk-btn")?.addEventListener("click", focusMyDeskOnMap);
+  fitResetBtn?.addEventListener("click", () => {
+    setGlobalFitMode("contain");
+    if (_inlineZoomController) _inlineZoomController.setFitMode("contain");
+    else fitFloorPlan();
+  });
+  fitHeightBtn?.addEventListener("click", () => {
+    setGlobalFitMode("height");
+    if (_inlineZoomController) _inlineZoomController.setFitMode("height");
+    else fitFloorPlan();
+  });
+  updateFitButtonsUI();
+}
+
 function initZoomPan() {
   if (!mapZoomWrapper || !mapZoomContent) return;
   _zoom = 1; _tx = 0; _ty = 0; _minZoom = 1;
@@ -474,22 +952,35 @@ function initZoomPan() {
   if (_zoomInitialized) return; // attach listeners only once
   _zoomInitialized = true;
 
-  mapZoomWrapper.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    const rect = mapZoomWrapper.getBoundingClientRect();
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
+  const zoomAround = (cx, cy, nextZoom) => {
     const prevZoom = _zoom;
-    _zoom = Math.min(4, Math.max(_minZoom, _zoom * (e.deltaY < 0 ? 1.15 : 0.87)));
-    // keep point under cursor fixed: translate(Tx,Ty) scale(Z) → cursor = (cx,cy) in wrapper
-    // content point = (cx - Tx) / prevZ, new Tx = cx - contentX * newZ
+    _zoom = Math.min(4, Math.max(_minZoom, nextZoom));
+    if (!Number.isFinite(prevZoom) || prevZoom <= 0) return;
     _tx = cx - (cx - _tx) / prevZoom * _zoom;
     _ty = cy - (cy - _ty) / prevZoom * _zoom;
     _applyTransform();
     mapZoomContent.style.cursor = _zoom > _minZoom ? "grab" : "default";
+  };
+
+  // Smooth wheel scaling to avoid abrupt jumps on desktop trackpads/mice.
+  const wheelZoomFactor = (deltaY) => {
+    const f = Math.exp(-deltaY * 0.0011);
+    return Math.max(0.92, Math.min(1.08, f));
+  };
+
+  mapZoomWrapper.addEventListener("wheel", (e) => {
+    if (_inlineZoomController) return;
+    if (_isMapControlsEvent(e)) return;
+    e.preventDefault();
+    const rect = mapZoomWrapper.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    zoomAround(cx, cy, _zoom * wheelZoomFactor(e.deltaY));
   }, { passive: false });
 
   mapZoomWrapper.addEventListener("mousedown", (e) => {
+    if (_inlineZoomController) return;
+    if (_isMapControlsEvent(e)) return;
     if (_zoom <= _minZoom) return;
     _isPanning = true;
     _panStart  = { x: e.clientX, y: e.clientY };
@@ -499,6 +990,7 @@ function initZoomPan() {
   });
 
   window.addEventListener("mousemove", (e) => {
+    if (_inlineZoomController) return;
     if (!_isPanning) return;
     _tx = _panOffset.x + (e.clientX - _panStart.x);
     _ty = _panOffset.y + (e.clientY - _panStart.y);
@@ -506,43 +998,95 @@ function initZoomPan() {
   });
 
   window.addEventListener("mouseup", () => {
+    if (_inlineZoomController) return;
     if (!_isPanning) return;
     _isPanning = false;
     mapZoomContent.style.cursor = _zoom > _minZoom ? "grab" : "default";
   });
 
-  document.getElementById("zoom-in-btn")?.addEventListener("click", () => {
-    const cx = mapZoomWrapper.clientWidth / 2, cy = mapZoomWrapper.clientHeight / 2;
-    const prev = _zoom;
-    _zoom = Math.min(4, _zoom * 1.3);
-    _tx = cx - (cx - _tx) / prev * _zoom;
-    _ty = cy - (cy - _ty) / prev * _zoom;
-    _applyTransform();
-    mapZoomContent.style.cursor = "grab";
-  });
-  document.getElementById("zoom-out-btn")?.addEventListener("click", () => {
-    const cx = mapZoomWrapper.clientWidth / 2, cy = mapZoomWrapper.clientHeight / 2;
-    const prev = _zoom;
-    _zoom = Math.max(_minZoom, _zoom / 1.3);
-    _tx = cx - (cx - _tx) / prev * _zoom;
-    _ty = cy - (cy - _ty) / prev * _zoom;
-    _applyTransform();
-    if (_zoom <= _minZoom) mapZoomContent.style.cursor = "default";
-  });
-  document.getElementById("focus-my-desk-btn")?.addEventListener("click", () => {
-    const myResv = state.floorReservations.find(r => r.user_id === _username && r.status === "active");
-    if (!myResv) { addMessage("Нет активной брони на этом этаже", "info"); return; }
-    highlightDesk(myResv.desk_id);
-    centerOnMarker(myResv.desk_id);
-    const markerEl = deskSvgOverlay?.querySelector(`[data-desk-id="${myResv.desk_id}"]`);
-    const deskObj  = state.desks.find(d => d.id === myResv.desk_id);
-    if (markerEl && deskObj) showSidePanel(markerEl, deskObj);
-  });
+  let touchMode = null; // null | pan | pinch
+  let touchPanStart = null;
+  let touchPanOffset = null;
+  let touchPinchStart = null;
 
-  document.getElementById("fit-mode-btn")?.addEventListener("click", () => {
-    _fitMode = _fitMode === 'contain' ? 'fill' : 'contain';
-    fitFloorPlan();
-  });
+  const touchDist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  const initPanFromTouch = (touch) => {
+    touchMode = "pan";
+    touchPanStart = { x: touch.clientX, y: touch.clientY };
+    touchPanOffset = { x: _tx, y: _ty };
+  };
+  const initPinchFromTouches = (t1, t2) => {
+    const rect = mapZoomWrapper.getBoundingClientRect();
+    const dist = Math.max(1, touchDist(t1, t2));
+    const midX = (t1.clientX + t2.clientX) / 2 - rect.left;
+    const midY = (t1.clientY + t2.clientY) / 2 - rect.top;
+    touchMode = "pinch";
+    touchPinchStart = {
+      dist,
+      zoom: _zoom,
+      worldX: (midX - _tx) / Math.max(_zoom, 1e-6),
+      worldY: (midY - _ty) / Math.max(_zoom, 1e-6),
+    };
+  };
+
+  mapZoomWrapper.addEventListener("touchstart", (e) => {
+    if (_inlineZoomController) return;
+    if (_isMapControlsEvent(e)) return;
+    if (e.touches.length >= 2) {
+      initPinchFromTouches(e.touches[0], e.touches[1]);
+      e.preventDefault();
+      return;
+    }
+    if (e.touches.length === 1 && _zoom > _minZoom) {
+      initPanFromTouch(e.touches[0]);
+      e.preventDefault();
+    }
+  }, { passive: false });
+
+  mapZoomWrapper.addEventListener("touchmove", (e) => {
+    if (_inlineZoomController) return;
+    if (_isMapControlsEvent(e)) return;
+    if (touchMode === "pinch" && e.touches.length >= 2 && touchPinchStart) {
+      const rect = mapZoomWrapper.getBoundingClientRect();
+      const dist = Math.max(1, touchDist(e.touches[0], e.touches[1]));
+      const ratio = dist / touchPinchStart.dist;
+      const nextZoom = Math.min(4, Math.max(_minZoom, touchPinchStart.zoom * ratio));
+      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+      _zoom = nextZoom;
+      _tx = midX - touchPinchStart.worldX * _zoom;
+      _ty = midY - touchPinchStart.worldY * _zoom;
+      _applyTransform();
+      mapZoomContent.style.cursor = _zoom > _minZoom ? "grab" : "default";
+      e.preventDefault();
+      return;
+    }
+    if (touchMode === "pan" && e.touches.length === 1 && touchPanStart && touchPanOffset) {
+      _tx = touchPanOffset.x + (e.touches[0].clientX - touchPanStart.x);
+      _ty = touchPanOffset.y + (e.touches[0].clientY - touchPanStart.y);
+      _applyTransform();
+      e.preventDefault();
+    }
+  }, { passive: false });
+
+  const handleTouchEnd = (e) => {
+    if (_inlineZoomController) return;
+    if (e.touches.length >= 2) {
+      initPinchFromTouches(e.touches[0], e.touches[1]);
+      return;
+    }
+    if (e.touches.length === 1 && _zoom > _minZoom) {
+      initPanFromTouch(e.touches[0]);
+      return;
+    }
+    touchMode = null;
+    touchPanStart = null;
+    touchPanOffset = null;
+    touchPinchStart = null;
+  };
+
+  mapZoomWrapper.addEventListener("touchend", handleTouchEnd, { passive: true });
+  mapZoomWrapper.addEventListener("touchcancel", handleTouchEnd, { passive: true });
 
   // Re-fit when wrapper resizes (window resize)
   let _fitRO;
@@ -555,34 +1099,27 @@ function initZoomPan() {
 // ── Fit image to wrapper ──────────────────────────────────────────────────────
 
 function fitFloorPlan() {
-  if (!mapZoomWrapper.clientWidth || !mapZoomWrapper.clientHeight) return;
+  if (!floorPlanImage.naturalWidth || !mapZoomWrapper.clientWidth || !mapZoomWrapper.clientHeight) return;
   const frame = document.getElementById("map-image-frame");
   if (!frame) return;
 
   const wW = mapZoomWrapper.clientWidth;
   const wH = mapZoomWrapper.clientHeight;
-  // SVG images may report naturalWidth=0 when no explicit width/height attrs; fall back to wrapper
-  const nW = floorPlanImage.naturalWidth  || wW;
-  const nH = floorPlanImage.naturalHeight || wH;
-  if (!nW || !nH) return;
+  const nW = floorPlanImage.naturalWidth;
+  const nH = floorPlanImage.naturalHeight;
 
-  if (_fitMode === 'fill') {
-    // Cover: scale to fill entire wrapper maintaining aspect ratio; may overflow → pan
-    const scale = Math.max(wW / nW, wH / nH);
-    _imgW = Math.round(nW * scale);
-    _imgH = Math.round(nH * scale);
-  } else if (_fitMode === 'height') {
+  if (_fitMode === 'height') {
     // Fill container height exactly; frame may be wider than wrapper → pan
     _imgH = wH;
     _imgW = Math.round(nW * wH / nH);
   } else {
-    // Contain: fit entire image into wrapper (scale up or down, no upscale cap)
+    // Contain: fit entire image, cap scale at 1.0 (no upscale = no blur)
     if (wW / nW < wH / nH) {
-      _imgW = wW;
-      _imgH = Math.round(wW * nH / nW);
+      _imgW = Math.min(nW, wW);
+      _imgH = Math.round(_imgW * nH / nW);
     } else {
-      _imgH = wH;
-      _imgW = Math.round(wH * nW / nH);
+      _imgH = Math.min(nH, wH);
+      _imgW = Math.round(_imgH * nW / nH);
     }
   }
 
@@ -604,37 +1141,272 @@ function fitFloorPlan() {
 
   if (mapZoomContent) mapZoomContent.style.cursor = _zoom > _minZoom ? "grab" : "default";
 
-  const btn = document.getElementById("fit-mode-btn");
-  if (btn) {
-    btn.textContent = _fitMode === 'contain' ? '⊠' : '↕';
-    btn.title = _fitMode === 'contain'
-      ? 'Вся карта — нажать: На весь фрейм'
-      : 'На весь фрейм — нажать: Вся карта';
-    btn.classList.toggle("active", _fitMode === 'fill');
-  }
+  updateFitButtonsUI();
 
   // Focus pending desk after navigation (navigateToDesk sets this)
   if (_pendingFocusDeskId) {
     const deskId = _pendingFocusDeskId;
+    const withArrow = _pendingFocusWithArrow;
     _pendingFocusDeskId = null;
+    _pendingFocusWithArrow = false;
     setTimeout(() => {
-      highlightDesk(deskId);
-      centerOnMarker(deskId);
-      const markerEl = deskSvgOverlay?.querySelector(`[data-desk-id="${deskId}"]`);
-      const deskObj  = state.desks.find(d => d.id === deskId);
-      if (markerEl && deskObj) showSidePanel(markerEl, deskObj);
+      focusDeskOnMap(deskId, { withArrow });
     }, 50);
   }
 }
 
 // ── Floor plan ───────────────────────────────────────────────────────────────
 
-function renderFloorPlan(floor) {
+// State for the currently shown map revision (SVG-based)
+let _currentRevision = null;
+let _currentLayout = null;
+
+function _clearInlineSvgWrap() {
+  document.getElementById("inline-svg-wrap")?.remove();
+  _inlineZoomController = null;
+}
+
+function _normDeskLabel(value) {
+  return String(value || "")
+    .toUpperCase()
+    .replace(/[^0-9A-ZА-ЯЁ]/g, "");
+}
+
+function _normHexColor(value, fallback = "#1d4ed8") {
+  const raw = String(value || "").trim();
+  if (/^#[0-9a-f]{3}$/i.test(raw)) {
+    return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`.toLowerCase();
+  }
+  return /^#[0-9a-f]{6}$/i.test(raw) ? raw.toLowerCase() : fallback;
+}
+
+function _centerOfPts(pts) {
+  if (!Array.isArray(pts) || !pts.length) return { x: 0, y: 0 };
+  let sx = 0;
+  let sy = 0;
+  for (const p of pts) {
+    sx += Number(p?.[0] || 0);
+    sy += Number(p?.[1] || 0);
+  }
+  return { x: sx / pts.length, y: sy / pts.length };
+}
+
+function _normalizeLabelPos(value) {
+  const v = String(value || "").trim().toLowerCase();
+  return ["center", "top", "bottom", "left", "right"].includes(v) ? v : "center";
+}
+
+function _boundsOfPts(pts) {
+  if (!Array.isArray(pts) || !pts.length) return null;
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const p of pts) {
+    const x = Number(p?.[0]);
+    const y = Number(p?.[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+  if (![minX, minY, maxX, maxY].every(Number.isFinite)) return null;
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    w: Math.max(1, maxX - minX),
+    h: Math.max(1, maxY - minY),
+    cx: (minX + maxX) / 2,
+    cy: (minY + maxY) / 2,
+  };
+}
+
+function _boundaryLabelPoint(pts, pos, fontSize) {
+  const b = _boundsOfPts(pts);
+  if (!b) return _centerOfPts(pts);
+  const position = _normalizeLabelPos(pos);
+  const margin = Math.max(4, Number(fontSize || 12) * 0.65, Math.min(b.w, b.h) * 0.08);
+  if (position === "top") return { x: b.cx, y: b.minY + margin };
+  if (position === "bottom") return { x: b.cx, y: b.maxY - margin };
+  if (position === "left") return { x: b.minX + margin, y: b.cy };
+  if (position === "right") return { x: b.maxX - margin, y: b.cy };
+  return { x: b.cx, y: b.cy };
+}
+
+function _layoutStrokeScale(vbWidth) {
+  const w = Number(vbWidth);
+  if (!Number.isFinite(w) || w <= 0) return 1;
+  return Math.max(0.2, Math.min(8, w * 0.001));
+}
+
+function _layoutStrokeWidth(kind, thick, vbWidth) {
+  const base = Number.isFinite(Number(thick)) ? Number(thick) : (
+    kind === "wall" ? 4 :
+    kind === "partition" ? 3 :
+    kind === "door" ? 2.2 :
+    2
+  );
+  const scale = _layoutStrokeScale(vbWidth);
+  if (kind === "boundary") return Math.max(1, base * scale * 0.4);
+  return Math.max(1, base * scale);
+}
+
+function _timeToMinutes(value) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(value || "").trim());
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  return hh * 60 + mm;
+}
+
+function _rangesOverlap(aStart, aEnd, bStart, bEnd) {
+  if (![aStart, aEnd, bStart, bEnd].every(Number.isFinite)) return true;
+  return aStart < bEnd && bStart < aEnd;
+}
+
+function _reservationMatchesCurrentWindow(r) {
+  if (!r || r.status !== "active") return false;
+  const selectedDate = String(dateInput?.value || "").trim();
+  const reservationDate = String(r.reservation_date || "").trim();
+  if (selectedDate && reservationDate && selectedDate !== reservationDate) return false;
+
+  const qStart = _timeToMinutes(startInput?.value);
+  const qEnd = _timeToMinutes(endInput?.value);
+  const rStart = _timeToMinutes(r.start_time);
+  const rEnd = _timeToMinutes(r.end_time);
+  return _rangesOverlap(qStart, qEnd, rStart, rEnd);
+}
+
+function _deskReservationsAtCurrentWindow(deskId) {
+  const hits = (state.floorReservations || []).filter(
+    (r) => r.desk_id === deskId && _reservationMatchesCurrentWindow(r),
+  );
+  const mine = hits.find((r) => r.user_id === _username) || null;
+  const occupied = hits.find((r) => r.user_id !== _username) || null;
+  return { mine, occupied };
+}
+
+function _reasonLooksOccupied(reason) {
+  const s = String(reason || "").toLowerCase();
+  return (
+    s.includes("занят") ||
+    s.includes("занято") ||
+    s.includes("уже забронир") ||
+    s.includes("already booked") ||
+    s.includes("reserved") ||
+    s.includes("conflict")
+  );
+}
+
+function _deskAvailabilityState(desk) {
+  if (!desk) return { desk: null, kind: "unknown", mine: null, occupied: null, avail: null, reason: "" };
+  const { mine, occupied } = _deskReservationsAtCurrentWindow(desk.id);
+  const avail = state.availability.get(desk.id);
+  const reason = String(avail?.reason || "");
+
+  let kind = "unknown";
+  if (mine) kind = "mine";
+  else if (occupied) kind = "occupied";
+  else if (avail?.available === true) kind = "available";
+  else if (avail?.available === false) kind = _reasonLooksOccupied(reason) ? "occupied" : "blocked";
+
+  return { desk, kind, mine, occupied, avail, reason };
+}
+
+function _findDeskByMarkerData(deskId, deskLabel) {
+  const byId = state.desks.find(d => String(d.id) === String(deskId));
+  if (byId) return byId;
+
+  const byLabel = state.desks.find(d => String(d.label) === String(deskLabel));
+  if (byLabel) return byLabel;
+
+  const normLabel = _normDeskLabel(deskLabel);
+  if (!normLabel) return null;
+  return state.desks.find(d => _normDeskLabel(d.label) === normLabel) || null;
+}
+
+function _deskVisualState(deskId, deskLabel) {
+  const desk = _findDeskByMarkerData(deskId, deskLabel);
+  return _deskAvailabilityState(desk);
+}
+
+function _findMarkerElByDeskId(deskId) {
+  const key = String(deskId);
+  return (
+    deskSvgOverlay?.querySelector(`[data-desk-id="${key}"]`) ||
+    document.querySelector(`#inline-floor-svg [data-desk-id="${key}"]`)
+  );
+}
+
+async function _resolveDeskForMarker(marker) {
+  const deskId = marker?.dataset?.deskId || "";
+  const deskLabel = marker?.dataset?.deskLabel || "";
+
+  let desk = _findDeskByMarkerData(deskId, deskLabel);
+  if (desk) return desk;
+
+  const floorId = floorSelect?.value;
+  if (!floorId) return null;
+
+  try {
+    state.desks = await apiRequest(`/desks?floor_id=${floorId}`);
+  } catch {
+    return null;
+  }
+
+  return _findDeskByMarkerData(deskId, deskLabel);
+}
+
+async function renderFloorPlan(floor) {
   document.getElementById("floor-plan-placeholder")?.remove();
   closeSidePanel();
+  clearDeskSearchArrow();
+  _currentRevision = null;
+  _currentLayout = null;
+  _inlineZoomController = null;
+  _clearInlineSvgWrap();
 
   const imageFrame = document.getElementById("map-image-frame");
 
+  // Prefer canonical published layout first (keeps client/editor visuals in sync).
+  if (floor?.id) {
+    try {
+      const layoutResp = await fetch(`${API_BASE}/floors/${floor.id}/layout/published`, {
+        headers: { Authorization: "Bearer " + getToken() },
+      });
+      if (layoutResp.ok) {
+        const published = await layoutResp.json();
+        if (published?.layout) {
+          _renderInlineLayoutFloor(published.layout, imageFrame);
+          return;
+        }
+      }
+    } catch { /* continue to published SVG fallback */ }
+
+    // Fallback: legacy published SVG revision.
+    try {
+      const resp = await fetch(`${API_BASE}/floors/${floor.id}/map/published`, {
+        headers: { Authorization: "Bearer " + getToken() },
+      });
+      if (resp.ok) {
+        const rev = await resp.json();
+        if (rev.plan_svg) {
+          _currentRevision = rev;
+          _renderInlineSVGFloor(rev, imageFrame);
+          return;
+        }
+      }
+    } catch { /* continue to PNG fallback */ }
+
+    // Do not render admin draft in client app: booking must rely on published data only.
+  }
+
+  // PNG fallback
   if (!floor?.plan_url) {
     if (imageFrame) imageFrame.style.display = "none";
     if (deskSvgOverlay) deskSvgOverlay.innerHTML = "";
@@ -659,6 +1431,545 @@ function renderFloorPlan(floor) {
   renderPlanMarkersFiltered();
 }
 
+function _renderInlineLayoutFloor(layout, imageFrame) {
+  _currentLayout = layout;
+  if (imageFrame) imageFrame.style.display = "none";
+  if (deskSvgOverlay) deskSvgOverlay.innerHTML = "";
+  if (mapControls) mapControls.style.display = "";
+
+  let svgWrap = document.getElementById("inline-svg-wrap");
+  if (!svgWrap) {
+    svgWrap = document.createElement("div");
+    svgWrap.id = "inline-svg-wrap";
+    svgWrap.style.cssText = "width:100%;height:100%;position:relative;overflow:hidden";
+    mapZoomWrapper.appendChild(svgWrap);
+  }
+
+  const vb = Array.isArray(layout.vb) && layout.vb.length >= 4 ? layout.vb : [0, 0, 1000, 1000];
+  const [vx, vy, vw, vh] = vb.map(Number);
+
+  const bgImage = layout.bg_url
+    ? `<image href="${_escAttr(layout.bg_url)}" x="${vx}" y="${vy}" width="${vw}" height="${vh}" preserveAspectRatio="xMidYMid meet" pointer-events="none"/>`
+    : "";
+
+  let boundaries = "";
+  const strokeScaleVb = Number(vw) || 1000;
+  for (const el of (layout.boundaries || [])) {
+    const ptsArr = Array.isArray(el.pts) ? el.pts : [];
+    if (ptsArr.length < 2) continue;
+    const pts = ptsArr.map(p => `${p[0]},${p[1]}`).join(" ");
+    const color = _normHexColor(el.color, "#1d4ed8");
+    const tag = el.closed === false ? "polyline" : "polygon";
+    const fill = el.closed === false ? "none" : color;
+    const strokeW = _layoutStrokeWidth("boundary", el.thick, strokeScaleVb);
+    boundaries += `<${tag} points="${pts}" fill="${fill}" fill-opacity="0.12" stroke="${color}" stroke-width="${strokeW}" stroke-linecap="butt" stroke-linejoin="round"/>`;
+    if (el.label) {
+      const labelSize = Number.isFinite(Number(el.label_size))
+        ? Math.max(8, Math.min(120, Number(el.label_size)))
+        : Math.max(9, vw * 0.011);
+      const c = _boundaryLabelPoint(ptsArr, el.label_pos, labelSize);
+      const angle = Number(el.label_angle || 0);
+      const rotateAttr = Number.isFinite(angle) && Math.abs(angle) > 1e-6
+        ? ` transform="rotate(${angle} ${c.x} ${c.y})"`
+        : "";
+      boundaries += `<text x="${c.x}" y="${c.y}" text-anchor="middle" dominant-baseline="middle" fill="${color}" stroke="#ffffff" stroke-width="0.8" paint-order="stroke" font-size="${labelSize}" font-weight="700" pointer-events="none"${rotateAttr}>${_escSvgText(el.label)}</text>`;
+    }
+  }
+
+  const walls = (layout.walls || []).map(el => {
+    const pts = (el.pts || []).map(p => `${p[0]},${p[1]}`).join(" ");
+    if (!pts) return "";
+    const strokeW = _layoutStrokeWidth("wall", el.thick, strokeScaleVb);
+    return `<polyline points="${pts}" fill="none" stroke="${UI_PALETTE.wall}" stroke-width="${strokeW}" stroke-linecap="butt" stroke-linejoin="round"/>`;
+  }).join("");
+
+  const partitions = (layout.partitions || []).map(el => {
+    const pts = (el.pts || []).map(p => `${p[0]},${p[1]}`).join(" ");
+    if (!pts) return "";
+    const strokeW = _layoutStrokeWidth("partition", el.thick, strokeScaleVb);
+    return `<polyline points="${pts}" fill="none" stroke="${UI_PALETTE.partition}" stroke-width="${strokeW}" stroke-linecap="butt" stroke-linejoin="round"/>`;
+  }).join("");
+
+  const doors = (layout.doors || []).map(el => {
+    const pts = (el.pts || []).map(p => `${p[0]},${p[1]}`).join(" ");
+    if (!pts) return "";
+    const strokeW = _layoutStrokeWidth("door", el.thick, strokeScaleVb);
+    return `<polyline points="${pts}" fill="none" stroke="${UI_PALETTE.door}" stroke-width="${strokeW}" stroke-linecap="butt" stroke-linejoin="round"/>`;
+  }).join("");
+
+  const layoutDesks = Array.isArray(layout.desks) ? layout.desks : [];
+  const deskSource = layoutDesks.length
+    ? layoutDesks
+    : (state.desks || []).map(d => ({
+        id: d.id,
+        label: d.label,
+        x: vx + Number(d.position_x || 0) * vw,
+        y: vy + Number(d.position_y || 0) * vh,
+        w: Math.max(1, Number(d.w || 0.07) * vw),
+        h: Math.max(1, Number(d.h || 0.05) * vh),
+      }));
+
+  const deskRects = deskSource.map(d => {
+    const x = Number(d.x || 0), y = Number(d.y || 0);
+    const w = Math.max(1, Number(d.w || 30)), h = Math.max(1, Number(d.h || 20));
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const rotation = Number(d.r || 0);
+    const transformAttr = Number.isFinite(rotation) && Math.abs(rotation) > 1e-6
+      ? ` transform="rotate(${rotation} ${cx} ${cy})"`
+      : "";
+    const label = _escSvgText(d.label || "");
+    const id = _escAttr(d.id || d.label || "");
+    const visual = _deskVisualState(String(d.id || ""), d.label || "");
+    const resolvedSpaceType =
+      d.space_type ||
+      state.desks.find((sd) => String(sd.id) === String(d.id || ""))?.space_type ||
+      "desk";
+    let fill = "#dbeafe";
+    let stroke = "#2563eb";
+    let textColor = "#1d4ed8";
+    let stateClass = "tile-unknown";
+    if (visual.kind === "mine") {
+      stateClass = "tile-mine";
+    } else if (visual.kind === "available") {
+      const st = d.space_type || "desk";
+      const c = _TILE_FILL[st] || _TILE_FILL.desk;
+      fill = c.fill;
+      stroke = c.stroke;
+      textColor = stroke;
+      stateClass = "tile-available";
+    } else if (visual.kind === "blocked") {
+      fill = "#fef3c7";
+      stroke = "#d97706";
+      textColor = "#92400e";
+      stateClass = "tile-blocked";
+    } else if (visual.kind === "occupied") {
+      fill = "#fee2e2";
+      stroke = "#dc2626";
+      textColor = "#991b1b";
+      stateClass = "tile-busy";
+    } else {
+      fill = "#e2e8f0";
+      stroke = "#64748b";
+      textColor = "#334155";
+    }
+    return `<g class="desk-tile client-marker st-${_escAttr(resolvedSpaceType)} ${stateClass}" data-desk-id="${id}" data-desk-label="${_escAttr(d.label || "")}" cursor="pointer"${transformAttr}>` +
+      `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${Math.max(1, h * 0.1)}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>` +
+      `<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="middle" fill="${textColor}" font-size="${Math.max(7, Math.min(h * 0.45, w * 0.22))}" pointer-events="none">${label}</text>` +
+      `</g>`;
+  }).join("");
+
+  svgWrap.innerHTML = `
+    <svg id="inline-floor-svg" viewBox="${vx} ${vy} ${vw} ${vh}"
+         style="width:100%;height:100%;display:block;user-select:none"
+         xmlns="http://www.w3.org/2000/svg">
+      <g id="if-bg" pointer-events="none">
+        <rect x="${vx}" y="${vy}" width="${vw}" height="${vh}" fill="#e9eef4"/>
+        ${bgImage}
+      </g>
+      <g id="if-boundaries" pointer-events="none">${boundaries}</g>
+      <g id="if-walls" pointer-events="none">${walls}</g>
+      <g id="if-partitions" pointer-events="none">${partitions}</g>
+      <g id="if-doors" pointer-events="none">${doors}</g>
+      <g id="if-markers">${deskRects}</g>
+    </svg>`;
+
+  const inlineSvg = document.getElementById("inline-floor-svg");
+  inlineSvg?.querySelectorAll(".client-marker").forEach(marker => {
+    marker.addEventListener("click", async () => {
+      const desk = await _resolveDeskForMarker(marker);
+      if (desk) {
+        showSidePanel(marker, desk);
+      } else {
+        addMessage("Место не готово к бронированию. Опубликуйте карту и выполните 'Синх. мест' в админке.", "error");
+      }
+    });
+  });
+
+  _inlineZoomController = _initInlineSvgZoomPan(inlineSvg, vx, vy, vw, vh);
+  renderLegend(state.desks || []);
+  renderFilterChips(state.desks || []);
+  applyUnifiedDeskFilter();
+  updateMyDeskFocusButton();
+  if (_pendingFocusDeskId) {
+    const deskId = _pendingFocusDeskId;
+    const withArrow = _pendingFocusWithArrow;
+    _pendingFocusDeskId = null;
+    _pendingFocusWithArrow = false;
+    setTimeout(() => {
+      focusDeskOnMap(deskId, { withArrow });
+    }, 50);
+  }
+}
+
+function _renderInlineSVGFloor(rev, imageFrame) {
+  _currentLayout = null;
+  // Hide the PNG image frame
+  if (imageFrame) imageFrame.style.display = "none";
+  if (deskSvgOverlay) deskSvgOverlay.innerHTML = "";
+  if (mapControls) mapControls.style.display = "";
+
+  // Remove or reuse inline SVG container
+  let svgWrap = document.getElementById("inline-svg-wrap");
+  if (!svgWrap) {
+    svgWrap = document.createElement("div");
+    svgWrap.id = "inline-svg-wrap";
+    svgWrap.style.cssText = "width:100%;height:100%;position:relative;overflow:hidden";
+    mapZoomWrapper.appendChild(svgWrap);
+  }
+
+  // Parse viewBox
+  const vbMatch = rev.plan_svg.match(/viewBox\s*=\s*["']([^"']+)["']/);
+  const vbParts = vbMatch ? vbMatch[1].trim().split(/[\s,]+/).map(Number) : [0, 0, 1000, 1000];
+  const [vx, vy, vw, vh] = vbParts.length >= 4 ? vbParts : [0, 0, 1000, 1000];
+
+  // Build a combined SVG: floor plan + zones + desk markers
+  const markerR = Math.max(4, vw * 0.008);
+
+  // Zones markup
+  let zonesHtml = "";
+  if (rev.zones && rev.zones.length) {
+    for (const zone of rev.zones) {
+      if (!zone.points || zone.points.length < 3) continue;
+      const color = zone.color || SPACE_COLORS_CLIENT[zone.space_type] || "#16a34a";
+      const pts = zone.points.map(p => `${p.x},${p.y}`).join(" ");
+      const cx = zone.points.reduce((s, p) => s + p.x, 0) / zone.points.length;
+      const cy = zone.points.reduce((s, p) => s + p.y, 0) / zone.points.length;
+      zonesHtml += `<polygon points="${pts}" fill="${color}" fill-opacity="0.2" stroke="${color}" stroke-width="1.5" pointer-events="none"/>`;
+      zonesHtml += `<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="middle" fill="${color}" font-size="${Math.max(8, vw * 0.012)}" pointer-events="none">${_escSvgText(zone.name)}</text>`;
+    }
+  }
+
+  // Desk markers from revision
+  let markersHtml = "";
+  if (rev.desks && rev.desks.length) {
+    for (const desk of rev.desks) {
+      if (desk.x == null) continue;
+      const cx = desk.x + (desk.w || 30) / 2;
+      const cy = desk.y + (desk.h || 20) / 2;
+      const deskId = desk.id || desk.label;
+      const visual = _deskVisualState(String(deskId || ""), desk.label || "");
+      let fill = SPACE_COLORS_CLIENT[desk.space_type] || "#2563eb";
+      let stroke = "white";
+      let stateClass = "tile-unknown";
+      if (visual.kind === "mine") {
+        fill = "#2563eb";
+        stateClass = "tile-mine";
+      } else if (visual.kind === "available") {
+        stateClass = "tile-available";
+      } else if (visual.kind === "blocked") {
+        fill = "#d97706";
+        stroke = "#ffffff";
+        stateClass = "tile-blocked";
+      } else if (visual.kind === "occupied") {
+        fill = "#dc2626";
+        stroke = "#ffffff";
+        stateClass = "tile-busy";
+      } else {
+        fill = "#64748b";
+        stroke = "#ffffff";
+      }
+      const st = desk.space_type || state.desks.find((sd) => String(sd.id) === String(deskId || ""))?.space_type || "desk";
+      markersHtml += `<g class="desk-tile client-marker st-${_escAttr(st)} ${stateClass}" data-desk-id="${_escAttr(deskId)}" data-desk-label="${_escAttr(desk.label)}" cursor="pointer">` +
+        `<circle cx="${cx}" cy="${cy}" r="${markerR}" fill="${fill}" stroke="${stroke}" stroke-width="2.5"/>` +
+        `</g>`;
+    }
+  }
+
+  // Inject combined SVG
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(rev.plan_svg, "image/svg+xml");
+  const srcSvg = doc.documentElement;
+  const innerContent = srcSvg.innerHTML;
+
+  svgWrap.innerHTML = `
+    <svg id="inline-floor-svg" viewBox="${vx} ${vy} ${vw} ${vh}"
+         style="width:100%;height:100%;display:block;user-select:none"
+         xmlns="http://www.w3.org/2000/svg">
+      <g id="if-floorplan" pointer-events="none">${innerContent}</g>
+      <g id="if-zones">${zonesHtml}</g>
+      <g id="if-markers">${markersHtml}</g>
+    </svg>`;
+
+  // Attach click handlers to markers
+  const inlineSvg = document.getElementById("inline-floor-svg");
+  inlineSvg?.querySelectorAll(".client-marker").forEach(marker => {
+    marker.addEventListener("click", async () => {
+      const desk = await _resolveDeskForMarker(marker);
+      if (desk) {
+        showSidePanel(marker, desk);
+      } else {
+        addMessage("Место не готово к бронированию. Опубликуйте карту и выполните 'Синх. мест' в админке.", "error");
+      }
+    });
+  });
+
+  // Basic zoom/pan on the inline SVG via viewBox manipulation
+  _inlineZoomController = _initInlineSvgZoomPan(inlineSvg, vx, vy, vw, vh);
+  renderLegend(state.desks || []);
+  renderFilterChips(state.desks || []);
+  applyUnifiedDeskFilter();
+  updateMyDeskFocusButton();
+  if (_pendingFocusDeskId) {
+    const deskId = _pendingFocusDeskId;
+    const withArrow = _pendingFocusWithArrow;
+    _pendingFocusDeskId = null;
+    _pendingFocusWithArrow = false;
+    setTimeout(() => {
+      focusDeskOnMap(deskId, { withArrow });
+    }, 50);
+  }
+}
+
+function _escSvgText(s) {
+  return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function _escAttr(s) {
+  return String(s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+function _safeBBox(node) {
+  if (!node || typeof node.getBBox !== "function") return null;
+  try {
+    const box = node.getBBox();
+    if (!box) return null;
+    const x = Number(box.x);
+    const y = Number(box.y);
+    const w = Number(box.width);
+    const h = Number(box.height);
+    if (![x, y, w, h].every(Number.isFinite)) return null;
+    if (w <= 0 || h <= 0) return null;
+    return { x, y, w, h };
+  } catch {
+    return null;
+  }
+}
+
+function _computeInlineFitView(svg, origX, origY, origW, origH) {
+  const fallback = {
+    x: Number(origX) || 0,
+    y: Number(origY) || 0,
+    w: Math.max(1, Number(origW) || 1000),
+    h: Math.max(1, Number(origH) || 1000),
+  };
+  if (!svg) return fallback;
+
+  const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+  const selectors = [
+    "#if-floorplan",
+    "#if-boundaries",
+    "#if-walls",
+    "#if-partitions",
+    "#if-doors",
+    "#if-zones",
+    "#if-markers",
+  ];
+
+  for (const selector of selectors) {
+    const node = svg.querySelector(selector);
+    const box = _safeBBox(node);
+    if (!box) continue;
+    bounds.minX = Math.min(bounds.minX, box.x);
+    bounds.minY = Math.min(bounds.minY, box.y);
+    bounds.maxX = Math.max(bounds.maxX, box.x + box.w);
+    bounds.maxY = Math.max(bounds.maxY, box.y + box.h);
+  }
+
+  if (!Number.isFinite(bounds.minX) || !Number.isFinite(bounds.maxX)) return fallback;
+  const bw = Math.max(1, bounds.maxX - bounds.minX);
+  const bh = Math.max(1, bounds.maxY - bounds.minY);
+  const pad = Math.max(8, Math.min(220, Math.max(bw, bh) * 0.08));
+  const tx = bounds.minX - pad;
+  const ty = bounds.minY - pad;
+  const tw = bw + pad * 2;
+  const th = bh + pad * 2;
+
+  const ratio = fallback.w / Math.max(1, fallback.h);
+  let vw = tw;
+  let vh = th;
+  if (tw / Math.max(1, th) > ratio) vh = tw / ratio;
+  else vw = th * ratio;
+  const cx = tx + tw / 2;
+  const cy = ty + th / 2;
+  return { x: cx - vw / 2, y: cy - vh / 2, w: Math.max(1, vw), h: Math.max(1, vh) };
+}
+
+function _initInlineSvgZoomPan(svg, origX, origY, origW, origH) {
+  if (!svg) return null;
+  let fitView = _computeInlineFitView(svg, origX, origY, origW, origH);
+  let vx = fitView.x, vy = fitView.y, vw = fitView.w, vh = fitView.h;
+  let isPanning = false;
+  let panStart = null;
+  let pinchStart = null;
+  const pointers = new Map();
+  let inlineFitMode = _fitMode;
+
+  svg.style.touchAction = "none";
+
+  const clampViewWidth = (value) => {
+    const minW = Math.max(1, fitView.w / 10);
+    const maxW = Math.max(minW, Math.min(Math.max(1, origW) * 1.25, fitView.w * 8));
+    return Math.max(minW, Math.min(maxW, value));
+  };
+  const wheelZoomFactor = (deltaY) => {
+    const f = Math.exp(-deltaY * 0.0011);
+    return Math.max(0.92, Math.min(1.08, f));
+  };
+
+  function applyPreserveAspectRatio() {
+    svg.setAttribute("preserveAspectRatio", inlineFitMode === "height" ? "xMidYMid slice" : "xMidYMid meet");
+  }
+
+  function applyVB() {
+    svg.setAttribute("viewBox", `${vx} ${vy} ${vw} ${vh}`);
+    const ind = document.getElementById("zoom-indicator");
+    if (ind) ind.textContent = `${Math.round((origW / Math.max(vw, 1e-6)) * 100)}%`;
+  }
+
+  function zoomBy(scale, clientX, clientY) {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const px = (clientX - rect.left) / rect.width;
+    const py = (clientY - rect.top) / rect.height;
+    const ptX = vx + px * vw;
+    const ptY = vy + py * vh;
+    const nextVW = clampViewWidth(vw / Math.max(scale, 1e-6));
+    const nextVH = origH * nextVW / origW;
+    vx = ptX - px * nextVW;
+    vy = ptY - py * nextVH;
+    vw = nextVW;
+    vh = nextVH;
+    applyVB();
+  }
+
+  function centerOnWorld(worldX, worldY, zoomScale = 2.2) {
+    const nextVW = clampViewWidth(origW / Math.max(zoomScale, 1));
+    const nextVH = origH * nextVW / origW;
+    vx = worldX - nextVW / 2;
+    vy = worldY - nextVH / 2;
+    vw = nextVW;
+    vh = nextVH;
+    applyVB();
+  }
+
+  function beginPinch() {
+    if (pointers.size < 2) return;
+    const [p1, p2] = Array.from(pointers.values()).slice(0, 2);
+    const rect = svg.getBoundingClientRect();
+    const dist = Math.max(1, Math.hypot(p1.x - p2.x, p1.y - p2.y));
+    const midX = (p1.x + p2.x) / 2;
+    const midY = (p1.y + p2.y) / 2;
+    const px = (midX - rect.left) / Math.max(rect.width, 1);
+    const py = (midY - rect.top) / Math.max(rect.height, 1);
+    pinchStart = {
+      dist,
+      startVW: vw,
+      worldX: vx + px * vw,
+      worldY: vy + py * vh,
+    };
+    isPanning = false;
+    panStart = null;
+  }
+
+  svg.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    zoomBy(wheelZoomFactor(e.deltaY), e.clientX, e.clientY);
+  }, { passive: false });
+
+  svg.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".client-marker")) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+    if (e.pointerType === "touch") {
+      svg.setPointerCapture(e.pointerId);
+      if (pointers.size >= 2) {
+        beginPinch();
+        return;
+      }
+    }
+    isPanning = true;
+    panStart = { clientX: e.clientX, clientY: e.clientY, vx, vy };
+    svg.setPointerCapture(e.pointerId);
+  });
+
+  svg.addEventListener("pointermove", (e) => {
+    if (pointers.has(e.pointerId)) {
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+    }
+
+    if (pinchStart && pointers.size >= 2) {
+      const [p1, p2] = Array.from(pointers.values()).slice(0, 2);
+      const rect = svg.getBoundingClientRect();
+      const dist = Math.max(1, Math.hypot(p1.x - p2.x, p1.y - p2.y));
+      const ratio = pinchStart.dist / dist;
+      const nextVW = clampViewWidth(pinchStart.startVW * ratio);
+      const nextVH = origH * nextVW / origW;
+      const midX = (p1.x + p2.x) / 2;
+      const midY = (p1.y + p2.y) / 2;
+      const px = (midX - rect.left) / Math.max(rect.width, 1);
+      const py = (midY - rect.top) / Math.max(rect.height, 1);
+      vx = pinchStart.worldX - px * nextVW;
+      vy = pinchStart.worldY - py * nextVH;
+      vw = nextVW;
+      vh = nextVH;
+      applyVB();
+      return;
+    }
+
+    if (!isPanning || !panStart) return;
+    const rect = svg.getBoundingClientRect();
+    const dx = -(e.clientX - panStart.clientX) / Math.max(rect.width, 1) * vw;
+    const dy = -(e.clientY - panStart.clientY) / Math.max(rect.height, 1) * vh;
+    vx = panStart.vx + dx;
+    vy = panStart.vy + dy;
+    applyVB();
+  });
+
+  const endPointer = (e) => {
+    pointers.delete(e.pointerId);
+    if (pinchStart && pointers.size < 2) {
+      pinchStart = null;
+    }
+    if (pointers.size === 1) {
+      const remaining = Array.from(pointers.values())[0];
+      isPanning = true;
+      panStart = { clientX: remaining.x, clientY: remaining.y, vx, vy };
+    } else if (pointers.size === 0) {
+      isPanning = false;
+      panStart = null;
+    }
+  };
+
+  svg.addEventListener("pointerup", endPointer);
+  svg.addEventListener("pointercancel", endPointer);
+
+  applyVB();
+  applyPreserveAspectRatio();
+  return {
+    zoomBy(scale) {
+      const rect = svg.getBoundingClientRect();
+      zoomBy(scale, rect.left + rect.width / 2, rect.top + rect.height / 2);
+    },
+    centerOn(worldX, worldY, zoomScale = 2.2) {
+      centerOnWorld(worldX, worldY, zoomScale);
+    },
+    reset() {
+      fitView = _computeInlineFitView(svg, origX, origY, origW, origH);
+      vx = fitView.x;
+      vy = fitView.y;
+      vw = fitView.w;
+      vh = fitView.h;
+      applyPreserveAspectRatio();
+      applyVB();
+    },
+    setFitMode(mode) {
+      inlineFitMode = mode === "height" ? "height" : "contain";
+      setGlobalFitMode(inlineFitMode);
+      this.reset();
+    },
+  };
+}
+
 // ── Side panel ───────────────────────────────────────────────────────────────
 
 let _selectedDeskId = null;
@@ -666,6 +1977,8 @@ let _selectedDeskId = null;
 function closeSidePanel() {
   _selectedDeskId = null;
   deskSvgOverlay?.querySelectorAll(".desk-tile.selected")
+    .forEach(m => m.classList.remove("selected"));
+  document.querySelectorAll("#inline-floor-svg .desk-tile.selected")
     .forEach(m => m.classList.remove("selected"));
   if (mapSidePanel) mapSidePanel.innerHTML = "";
   const emptyEl = document.getElementById("desk-detail-empty");
@@ -675,6 +1988,8 @@ function closeSidePanel() {
 function showSidePanel(marker, desk) {
   deskSvgOverlay?.querySelectorAll(".desk-tile.selected")
     .forEach(m => m.classList.remove("selected"));
+  document.querySelectorAll("#inline-floor-svg .desk-tile.selected")
+    .forEach(m => m.classList.remove("selected"));
 
   // Toggle off if same desk clicked again
   if (_selectedDeskId === desk.id) {
@@ -682,17 +1997,17 @@ function showSidePanel(marker, desk) {
     return;
   }
   _selectedDeskId = desk.id;
+  if (_isMobileViewport() && _sheetState === "collapsed") {
+    setSheetState("half");
+  }
   marker.classList.add("selected");
   const emptyEl = document.getElementById("desk-detail-empty");
   if (emptyEl) emptyEl.style.display = "none";
 
-  const avail  = state.availability.get(desk.id);
-  const myResv = state.floorReservations.find(
-    (r) => r.desk_id === desk.id && r.user_id === _username && r.status === "active"
-  );
-  const booked = state.floorReservations.find(
-    (r) => r.desk_id === desk.id && r.status === "active"
-  );
+  const visual = _deskAvailabilityState(desk);
+  const avail = visual.avail;
+  const myResv = visual.mine;
+  const booked = visual.occupied;
 
   const SPACE_LABELS = {
     desk: "Рабочий стол", meeting_room: "Переговорная",
@@ -702,12 +2017,16 @@ function showSidePanel(marker, desk) {
   const typeLabel  = desk.type === "fixed" ? "Закреплённое" : "Гибкое";
 
   let statusHtml;
-  if (myResv) {
+  if (visual.kind === "mine") {
     statusHtml = `<span class="badge" style="background:var(--primary-light);color:var(--primary);border:1px solid var(--primary-border)">Моё</span>`;
-  } else if (avail?.available) {
+  } else if (visual.kind === "available") {
     statusHtml = `<span class="badge available">Доступно</span>`;
-  } else {
+  } else if (visual.kind === "blocked") {
+    statusHtml = `<span class="badge blocked">Недоступно</span>`;
+  } else if (visual.kind === "occupied") {
     statusHtml = `<span class="badge busy">Занято</span>`;
+  } else {
+    statusHtml = `<span class="badge" style="background:var(--bg-2);color:var(--text-2);border:1px solid var(--border)">Проверяется</span>`;
   }
 
   let bookedHtml = "";
@@ -717,24 +2036,34 @@ function showSidePanel(marker, desk) {
       ${booked.user_id} · ${booked.start_time?.slice(0, 5) ?? "?"} – ${booked.end_time?.slice(0, 5) ?? "?"}
     </div>
     <div style="display:flex;gap:6px;margin-top:10px">
-      <button class="btn btn-secondary btn-sm" id="_sp_route" style="flex:1">
-        <i data-lucide="route" style="width:12px;height:12px"></i> Маршрут
-      </button>
-      <button class="btn btn-secondary btn-sm" id="_sp_profile" data-username="${booked.user_id}" style="flex:1">
+      <button class="btn btn-secondary btn-sm" id="_sp_profile" data-username="${booked.user_id}" style="width:100%">
         <i data-lucide="user-circle" style="width:12px;height:12px"></i> Профиль
       </button>
     </div>`;
   }
 
   let actionHtml = "";
-  if (avail?.available) {
+  if (visual.kind === "available") {
     actionHtml = `<button class="btn btn-primary btn-sm" id="_sp_book" style="width:100%">Забронировать</button>`;
   } else if (myResv) {
     actionHtml = `<button class="btn btn-danger btn-sm" id="_sp_cancel" data-id="${myResv.id}" style="width:100%">Отменить мою бронь</button>`;
   }
 
+  let blockedReasonHtml = "";
+  if (visual.kind === "blocked" && visual.reason) {
+    blockedReasonHtml = `<div class="side-panel-meta" style="margin-top:8px">
+      <i data-lucide="info" style="width:12px;height:12px"></i>
+      ${visual.reason}
+    </div>`;
+  }
+
   const isFav = state.favorites.has(desk.id);
   const favBtnHtml = `<button class="btn btn-secondary btn-sm" id="_sp_fav" data-desk-id="${desk.id}" title="${isFav ? "Убрать из избранного" : "В избранное"}" style="font-size:16px;padding:0 8px">${isFav ? "★" : "☆"}</button>`;
+
+  const windowHtml = `<div class="side-panel-meta">
+    <i data-lucide="clock-3" style="width:12px;height:12px"></i>
+    Просмотр: ${_timeWindowText()}
+  </div>`;
 
   mapSidePanel.innerHTML = `
     <div class="side-panel-header">
@@ -744,9 +2073,11 @@ function showSidePanel(marker, desk) {
       </div>
       <div style="display:flex;align-items:center;gap:6px">${statusHtml}${favBtnHtml}</div>
     </div>
+    ${windowHtml}
     ${bookedHtml}
+    ${blockedReasonHtml}
     <div id="_sp_colleague_area"></div>
-    ${actionHtml ? `<div style="margin-top:12px">${actionHtml}</div>` : ""}`;
+    ${actionHtml ? `<div class="side-panel-actions">${actionHtml}</div>` : ""}`;
 
   if (window.lucide) lucide.createIcons({ nodes: [mapSidePanel] });
 
@@ -768,7 +2099,7 @@ function showSidePanel(marker, desk) {
         await apiRequest(`/users/me/favorites/${did}`, { method: "POST" });
         state.favorites.add(did);
       }
-      const markerEl = deskSvgOverlay?.querySelector(`[data-desk-id="${did}"]`);
+      const markerEl = _findMarkerElByDeskId(did);
       if (markerEl) markerEl.classList.toggle("favorite", state.favorites.has(did));
       const btn = mapSidePanel.querySelector("#_sp_fav");
       if (btn) {
@@ -782,19 +2113,6 @@ function showSidePanel(marker, desk) {
     }
   });
 
-  mapSidePanel.querySelector("#_sp_route")?.addEventListener("click", (e) => {
-    const btn = e.currentTarget;
-    if (btn.classList.contains("route-active")) {
-      btn.classList.remove("route-active");
-      highlightDesk(null);
-      document.getElementById("desk-pointer-line")?.remove();
-    } else {
-      btn.classList.add("route-active");
-      highlightDesk(desk.id);
-      buildRoute(desk.id);
-    }
-  });
-
   mapSidePanel.querySelector("#_sp_profile")?.addEventListener("click", (e) => {
     openProfileModal(e.currentTarget.dataset.username);
   });
@@ -805,7 +2123,7 @@ function showSidePanel(marker, desk) {
   }
 
   // ── Recurring booking section (only when desk is available) ──
-  if (avail?.available) {
+  if (visual.kind === "available") {
     const recurSection = document.createElement("div");
     recurSection.className = "recur-section";
 
@@ -849,7 +2167,7 @@ function showSidePanel(marker, desk) {
     const today    = new Date();
     const maxDate  = new Date(today.getTime() + 60 * 24 * 60 * 60 * 1000);
     const minDate  = new Date(today.getTime() + 1  * 24 * 60 * 60 * 1000);
-    const fmt = (d) => d.toISOString().slice(0, 10);
+    const fmt = (d) => _isoLocalDate(d);
 
     const endRow = document.createElement("div");
     endRow.className = "recur-end-row";
@@ -1044,163 +2362,112 @@ function closeProfileModal() {
 // ── Desk highlight ───────────────────────────────────────────────────────────
 
 let _highlightedDeskId = null;
+let _searchArrowDeskId = null;
 
-// A* pathfinding on a downsampled (80×80) copy of the floor plan PNG.
-async function computePath(planUrl, x1, y1, x2, y2) {
-  const W = 80, H = 80;
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      try {
-        const canvas = document.createElement("canvas");
-        canvas.width = W; canvas.height = H;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, W, H);
-        const px = ctx.getImageData(0, 0, W, H).data;
-
-        const walkable = (gx, gy) => {
-          const i = (gy * W + gx) * 4;
-          return (px[i] + px[i + 1] + px[i + 2]) / 3 > 160;
-        };
-
-        const snap = (fx, fy) => {
-          let gx = Math.round(fx * (W - 1)), gy = Math.round(fy * (H - 1));
-          if (walkable(gx, gy)) return [gx, gy];
-          for (let r = 1; r <= 3; r++) {
-            for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) {
-              if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
-              const nx = gx + dx, ny = gy + dy;
-              if (nx >= 0 && ny >= 0 && nx < W && ny < H && walkable(nx, ny)) return [nx, ny];
-            }
-          }
-          return [gx, gy];
-        };
-
-        const [sx, sy] = snap(x1, y1);
-        const [ex, ey] = snap(x2, y2);
-        const heur = (x, y) => Math.abs(x - ex) + Math.abs(y - ey);
-        const key  = (x, y) => y * W + x;
-
-        const heap = [];
-        const heapPush = (n) => {
-          heap.push(n);
-          let i = heap.length - 1;
-          while (i > 0) {
-            const p = (i - 1) >> 1;
-            if (heap[p].f <= heap[i].f) break;
-            [heap[p], heap[i]] = [heap[i], heap[p]]; i = p;
-          }
-        };
-        const heapPop = () => {
-          const top = heap[0], last = heap.pop();
-          if (heap.length) {
-            heap[0] = last;
-            let i = 0;
-            while (true) {
-              const l = 2*i+1, r = 2*i+2, n = heap.length;
-              let m = i;
-              if (l < n && heap[l].f < heap[m].f) m = l;
-              if (r < n && heap[r].f < heap[m].f) m = r;
-              if (m === i) break;
-              [heap[m], heap[i]] = [heap[i], heap[m]]; i = m;
-            }
-          }
-          return top;
-        };
-
-        const gScore = new Map([[key(sx, sy), 0]]);
-        const came   = new Map();
-        const closed = new Set();
-        heapPush({ x: sx, y: sy, f: heur(sx, sy) });
-
-        const DIRS = [[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]];
-        let found = false;
-
-        while (heap.length) {
-          const cur = heapPop();
-          const ck = key(cur.x, cur.y);
-          if (closed.has(ck)) continue;
-          closed.add(ck);
-          if (cur.x === ex && cur.y === ey) { found = true; break; }
-          if (closed.size > 6000) break;
-
-          const cg = gScore.get(ck) ?? 0;
-          for (const [dx, dy] of DIRS) {
-            const nx = cur.x + dx, ny = cur.y + dy;
-            if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-            if (!walkable(nx, ny)) continue;
-            const nk = key(nx, ny);
-            if (closed.has(nk)) continue;
-            const ng = cg + (dx && dy ? 1.414 : 1);
-            if (ng < (gScore.get(nk) ?? Infinity)) {
-              gScore.set(nk, ng);
-              came.set(nk, ck);
-              heapPush({ x: nx, y: ny, f: ng + heur(nx, ny) });
-            }
-          }
-        }
-
-        if (!found) { resolve(null); return; }
-
-        const pts = [];
-        let ck = key(ex, ey);
-        const sk = key(sx, sy);
-        while (ck !== undefined) {
-          pts.unshift({ x: (ck % W) / (W - 1), y: Math.floor(ck / W) / (H - 1) });
-          if (ck === sk) break;
-          ck = came.get(ck);
-        }
-
-        const out = [pts[0]];
-        for (let i = 4; i < pts.length - 1; i += 4) out.push(pts[i]);
-        out.push(pts[pts.length - 1]);
-        resolve(out);
-      } catch {
-        resolve(null);
-      }
-    };
-    img.onerror = () => resolve(null);
-    img.src = planUrl;
-  });
+function clearDeskSearchArrow() {
+  document.querySelectorAll(".desk-search-arrow").forEach((el) => el.remove());
+  _searchArrowDeskId = null;
 }
 
-function _drawRouteSvg(points) {
-  document.getElementById("desk-pointer-line")?.remove();
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.id = "desk-pointer-line";
-  svg.setAttribute("viewBox", "0 0 1 1");
-  svg.setAttribute("preserveAspectRatio", "none");
-  svg.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible";
-  const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-  poly.setAttribute("points", points.map(p => `${p.x},${p.y}`).join(" "));
-  poly.setAttribute("stroke", "#2563eb");
-  poly.setAttribute("stroke-width", "0.012");
-  poly.setAttribute("stroke-dasharray", "0.035 0.018");
-  poly.setAttribute("stroke-linejoin", "round");
-  poly.setAttribute("stroke-linecap", "round");
-  poly.setAttribute("fill", "none");
-  poly.setAttribute("opacity", "0.75");
-  svg.appendChild(poly);
-  floorPlanOverlay.appendChild(svg);
+function showDeskSearchArrow(deskId) {
+  clearDeskSearchArrow();
+  if (!deskId) return;
+  const marker = _findMarkerElByDeskId(deskId);
+  if (!marker || typeof marker.getBBox !== "function") return;
+  const svg = marker.ownerSVGElement;
+  if (!svg) return;
+
+  let box = null;
+  try {
+    box = marker.getBBox();
+  } catch {
+    box = null;
+  }
+  if (!box) return;
+  const x = Number(box.x);
+  const y = Number(box.y);
+  const w = Number(box.width);
+  const h = Number(box.height);
+  if (![x, y, w, h].every(Number.isFinite)) return;
+
+  const ns = "http://www.w3.org/2000/svg";
+  const cx = x + w / 2;
+  const tipY = y - Math.max(2, h * 0.08);
+  const headH = Math.max(8, h * 0.55);
+  const headHalfW = Math.max(6, w * 0.42);
+  const headBaseY = tipY - headH;
+  const shaftTopY = headBaseY - Math.max(14, h * 0.95);
+
+  const g = document.createElementNS(ns, "g");
+  g.classList.add("desk-search-arrow");
+  g.setAttribute("data-desk-id", String(deskId));
+  g.setAttribute("pointer-events", "none");
+
+  const line = document.createElementNS(ns, "line");
+  line.setAttribute("x1", String(cx));
+  line.setAttribute("y1", String(shaftTopY));
+  line.setAttribute("x2", String(cx));
+  line.setAttribute("y2", String(headBaseY));
+
+  const triangle = document.createElementNS(ns, "polygon");
+  triangle.setAttribute(
+    "points",
+    `${cx},${tipY} ${cx - headHalfW},${headBaseY} ${cx + headHalfW},${headBaseY}`,
+  );
+
+  const ring = document.createElementNS(ns, "circle");
+  ring.setAttribute("cx", String(cx));
+  ring.setAttribute("cy", String(shaftTopY));
+  ring.setAttribute("r", String(Math.max(4, Math.min(10, headHalfW * 0.7))));
+
+  g.append(line, triangle, ring);
+  (marker.parentNode || svg).appendChild(g);
+  _searchArrowDeskId = deskId;
 }
 
 function highlightDesk(deskId) {
+  if (!deskId || (_searchArrowDeskId && String(_searchArrowDeskId) !== String(deskId))) {
+    clearDeskSearchArrow();
+  }
   deskSvgOverlay?.querySelectorAll(".desk-tile.highlighted")
     .forEach(m => m.classList.remove("highlighted"));
-  document.getElementById("desk-pointer-line")?.remove();
+  document.querySelectorAll("#inline-floor-svg .desk-tile.highlighted")
+    .forEach(m => m.classList.remove("highlighted"));
   _highlightedDeskId = null;
 
   if (!deskId) return;
 
-  const marker = deskSvgOverlay?.querySelector(`[data-desk-id="${deskId}"]`);
+  const marker =
+    deskSvgOverlay?.querySelector(`[data-desk-id="${deskId}"]`) ||
+    document.querySelector(`#inline-floor-svg [data-desk-id="${deskId}"]`);
   if (!marker) return;
 
   marker.classList.add("highlighted");
   _highlightedDeskId = deskId;
 }
 
+function focusDeskOnMap(deskId, opts = {}) {
+  const { withArrow = false } = opts;
+  if (deskId == null) return;
+  highlightDesk(deskId);
+  centerOnMarker(deskId);
+  if (withArrow) showDeskSearchArrow(deskId);
+  else clearDeskSearchArrow();
+  const markerEl = _findMarkerElByDeskId(deskId);
+  const deskObj = state.desks.find((d) => d.id === deskId);
+  if (markerEl && deskObj) showSidePanel(markerEl, deskObj);
+}
+
 function centerOnMarker(deskId) {
+  if (_inlineZoomController) {
+    const marker = document.querySelector(`#inline-floor-svg [data-desk-id="${deskId}"]`);
+    if (!marker || typeof marker.getBBox !== "function") return;
+    const box = marker.getBBox();
+    if (!Number.isFinite(box.x) || !Number.isFinite(box.y)) return;
+    _inlineZoomController.centerOn(box.x + box.width / 2, box.y + box.height / 2, 2.25);
+    return;
+  }
+
   const desk = state.desks.find(d => d.id === deskId);
   if (!desk || typeof desk.position_x !== "number") return;
 
@@ -1218,147 +2485,87 @@ function centerOnMarker(deskId) {
   if (mapZoomContent) mapZoomContent.style.cursor = "grab";
 }
 
-async function buildRoute(deskId) {
-  document.getElementById("desk-pointer-line")?.remove();
-  if (!deskId) return;
-
-  const desk = state.desks.find(d => d.id === deskId);
-  if (!desk || typeof desk.position_x !== "number") return;
-
-  const myResv = state.floorReservations.find(r => r.user_id === _username && r.status === "active");
-  const myDesk = myResv ? state.desks.find(d => d.id === myResv.desk_id) : null;
-  const startX = (myDesk && typeof myDesk.position_x === "number") ? myDesk.position_x : 0.5;
-  const startY = (myDesk && typeof myDesk.position_y === "number") ? myDesk.position_y : 0.5;
-  const endX = desk.position_x, endY = desk.position_y;
-
-  _drawRouteSvg([{ x: startX, y: startY }, { x: endX, y: endY }]);
-
-  const planUrl = floorPlanImage.src;
-  if (planUrl && planUrl !== window.location.href) {
-    const path = await computePath(planUrl, startX, startY, endX, endY);
-    if (_highlightedDeskId === deskId && path && path.length > 1) {
-      _drawRouteSvg(path);
-    }
-  }
-}
-
-// ── Tooltip helpers ──────────────────────────────────────────────────────────
-
-function _getTooltip() {
-  let tt = document.getElementById("map-tooltip");
-  if (!tt) {
-    tt = document.createElement("div");
-    tt.id = "map-tooltip";
-    tt.className = "map-tooltip";
-    tt.style.display = "none";
-    document.body.appendChild(tt);
-  }
-  return tt;
-}
-
-function _positionTooltip(e) {
-  const tt = _getTooltip();
-  const vw = window.innerWidth, vh = window.innerHeight;
-  const tw = tt.offsetWidth || 160, th = tt.offsetHeight || 48;
-  let x = e.clientX + 14, y = e.clientY - 10;
-  if (x + tw > vw - 8) x = e.clientX - tw - 10;
-  if (y + th > vh - 8) y = e.clientY - th - 4;
-  tt.style.left = x + "px";
-  tt.style.top  = y + "px";
-}
-
-function _escHtml(str) {
-  return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-}
-
 // ── Plan markers ────────────────────────────────────────────────────────────
+
+// Space-type fill colors for SVG tiles (available state)
+const _TILE_FILL = {
+  desk:         { fill: "#dcfce7", stroke: "#16a34a" },
+  meeting_room: { fill: "#ede9fe", stroke: "#7c3aed" },
+  call_room:    { fill: "#cffafe", stroke: "#0891b2" },
+  open_space:   { fill: "#ecfccb", stroke: "#65a30d" },
+  lounge:       { fill: "#fef3c7", stroke: "#d97706" },
+};
 
 function renderPlanMarkers(svgEl, desks) {
   if (!svgEl) return;
   _highlightedDeskId = null;
-  document.getElementById("desk-pointer-line")?.remove();
   svgEl.innerHTML = "";
 
   desks
     .filter((d) => typeof d.position_x === "number" && typeof d.position_y === "number")
     .forEach((d) => {
-      const avail  = state.availability.get(d.id);
-      const isMine = state.floorReservations.some(
-        (r) => r.desk_id === d.id && r.user_id === _username && r.status === "active"
-      );
+      const visual = _deskAvailabilityState(d);
       const st = d.space_type || "desk";
       const tileW = (d.w || 0.03) * 1000;
       const tileH = (d.h || 0.02) * 1000;
-      const cx    = d.position_x * 1000 + tileW / 2;
-      const cy    = d.position_y * 1000 + tileH / 2;
+      const tx    = d.position_x * 1000;
+      const ty    = d.position_y * 1000;
 
-      // Dot color: blue=mine, green=available, red=busy, gray=unknown
-      let dotFill;
-      if (isMine) {
-        dotFill = "#3b82f6";
-      } else if (!state.availability.has(d.id)) {
-        dotFill = "#94a3b8"; // gray — not checked yet
-      } else if (avail?.available) {
-        dotFill = "#22c55e";
+      let fillColor, strokeColor;
+      if (visual.kind === "mine") {
+        fillColor = "#dbeafe"; strokeColor = "#2563eb";
+      } else if (visual.kind === "available") {
+        const c = _TILE_FILL[st] || _TILE_FILL.desk;
+        fillColor = c.fill; strokeColor = c.stroke;
+      } else if (visual.kind === "blocked") {
+        fillColor = "#fef3c7"; strokeColor = "#d97706";
+      } else if (visual.kind === "occupied") {
+        fillColor = "#fee2e2"; strokeColor = "#dc2626";
       } else {
-        dotFill = "#ef4444";
+        fillColor = "#e2e8f0"; strokeColor = "#64748b";
       }
 
       const ns = "http://www.w3.org/2000/svg";
       const g = document.createElementNS(ns, "g");
       g.classList.add("desk-tile", "st-" + st);
-      if (isMine)              g.classList.add("tile-mine");
-      else if (avail?.available) g.classList.add("tile-available");
-      else                     g.classList.add("tile-busy");
+      if (visual.kind === "mine") g.classList.add("tile-mine");
+      else if (visual.kind === "available") g.classList.add("tile-available");
+      else if (visual.kind === "blocked") g.classList.add("tile-blocked");
+      else if (visual.kind === "occupied") g.classList.add("tile-busy");
+      else g.classList.add("tile-unknown");
       if (state.favorites.has(d.id)) g.classList.add("favorite");
       g.dataset.deskId = String(d.id);
 
-      // White halo for visibility on any map background
-      const halo = document.createElementNS(ns, "circle");
-      halo.setAttribute("cx", String(cx));
-      halo.setAttribute("cy", String(cy));
-      halo.setAttribute("r",  "5");
-      halo.setAttribute("fill", "white");
-      halo.setAttribute("opacity", "0.7");
-      g.appendChild(halo);
-
-      // Colored dot (no stroke)
-      const circ = document.createElementNS(ns, "circle");
-      circ.setAttribute("cx",   String(cx));
-      circ.setAttribute("cy",   String(cy));
-      circ.setAttribute("r",    "4");
-      circ.setAttribute("fill", dotFill);
-      circ.classList.add("desk-dot");
-      g.appendChild(circ);
-
-      // Tooltip on hover
-      const _spaceLabel = { desk: "Стол", meeting_room: "Переговорная", call_room: "Call-room", open_space: "Open Space", lounge: "Лаунж" };
-      g.addEventListener("mouseenter", (e) => {
-        const occupant = state.floorReservations.find((r) => r.desk_id === d.id && r.status === "active");
-        let statusText, statusColor;
-        if (isMine) {
-          statusText = "Моё место"; statusColor = "#93c5fd";
-        } else if (!state.availability.has(d.id)) {
-          statusText = "Не проверено"; statusColor = "#cbd5e1";
-        } else if (avail?.available) {
-          statusText = "Свободно"; statusColor = "#86efac";
-        } else {
-          statusText = occupant ? `Занято · ${occupant.user_id}` : "Занято";
-          statusColor = "#fca5a5";
-        }
-        const tt = _getTooltip();
-        tt.innerHTML =
-          `<span class="tt-name">${_escHtml(d.label)}</span>` +
-          `<span class="tt-meta">${_spaceLabel[st] || st} · <span style="color:${statusColor}">${statusText}</span></span>`;
-        tt.style.display = "block";
-        _positionTooltip(e);
-      });
-      g.addEventListener("mousemove", _positionTooltip);
-      g.addEventListener("mouseleave", () => { _getTooltip().style.display = "none"; });
+      const isDesk = st === "desk";
+      if (isDesk) {
+        // Desk: small circle at center of tile area
+        const cx = tx + tileW / 2;
+        const cy = ty + tileH / 2;
+        const r  = 6;
+        const circ = document.createElementNS(ns, "circle");
+        circ.setAttribute("cx",           String(cx));
+        circ.setAttribute("cy",           String(cy));
+        circ.setAttribute("r",            String(r));
+        circ.setAttribute("fill",         fillColor);
+        circ.setAttribute("stroke",       strokeColor);
+        circ.setAttribute("stroke-width", "2");
+        g.appendChild(circ);
+      } else {
+        // Room: rectangle block
+        const rect = document.createElementNS(ns, "rect");
+        rect.setAttribute("x",            String(tx));
+        rect.setAttribute("y",            String(ty));
+        rect.setAttribute("width",        String(tileW));
+        rect.setAttribute("height",       String(tileH));
+        rect.setAttribute("rx",           "8");
+        rect.setAttribute("fill",         fillColor);
+        rect.setAttribute("stroke",       strokeColor);
+        rect.setAttribute("stroke-width", "2");
+        g.appendChild(rect);
+      }
 
       g.addEventListener("click", (e) => {
         e.stopPropagation();
-        _getTooltip().style.display = "none";
         showSidePanel(g, d);
       });
 
@@ -1367,10 +2574,10 @@ function renderPlanMarkers(svgEl, desks) {
 
   // Reset side panel on floor change / re-render
   closeSidePanel();
-  _activeSpaceFilters.clear();
   renderLegend(desks);
-  renderSpaceFilter(desks);
-  applySpaceFilter();
+  renderFilterChips(desks);
+  applyUnifiedDeskFilter();
+  updateMyDeskFocusButton();
 }
 
 const _LEGEND_LABELS = {
@@ -1385,17 +2592,13 @@ const _LEGEND_COLORS = {
 function renderLegend(desks) {
   const el = document.getElementById("map-legend");
   if (!el) return;
-  if (!desks.length) { el.style.display = "none"; return; }
+  const types = [...new Set(desks.map(d => d.space_type || "desk"))];
+  if (types.length <= 1) { el.style.display = "none"; return; }
   el.style.display = "";
-  el.innerHTML = [
-    { color: "#22c55e", label: "Свободно" },
-    { color: "#ef4444", label: "Занято" },
-    { color: "#3b82f6", label: "Моё место" },
-    { color: "#94a3b8", label: "Не проверено" },
-  ].map(({ color, label }) =>
+  el.innerHTML = types.map(t =>
     `<span class="legend-item">
-       <span class="legend-dot" style="background:${color}"></span>
-       ${label}
+       <span class="legend-dot" style="background:${_LEGEND_COLORS[t] || "#888"}"></span>
+       ${_LEGEND_LABELS[t] || t}
      </span>`
   ).join("");
 }
@@ -1408,6 +2611,89 @@ function hideColleagues() {
   if (list) list.innerHTML = '<p class="empty" style="padding:20px 16px;font-size:12px">Выберите этаж для отображения</p>';
   if (count) count.textContent = "";
   state.floorReservations = [];
+  updateSheetMiniSummary();
+}
+
+function renderFloorPlacesList() {
+  const list = document.getElementById("colleagues-list");
+  const count = document.getElementById("colleagues-count");
+  if (!list) return;
+
+  list.innerHTML = "";
+  const entries = _deskEntriesMatchingFilters()
+    .sort((a, b) => String(a.desk?.label || "").localeCompare(String(b.desk?.label || ""), "ru", { numeric: true, sensitivity: "base" }));
+
+  if (!entries.length) {
+    list.innerHTML = '<p class="empty" style="padding:20px 16px;font-size:12px">Нет мест по выбранным фильтрам и интервалу</p>';
+    if (count) count.textContent = "";
+    updateSheetMiniSummary();
+    return;
+  }
+
+  if (count) count.textContent = `${entries.length}`;
+
+  const col = document.createElement("div");
+  col.className = "floor-place-list";
+
+  const windowMeta = document.createElement("div");
+  windowMeta.className = "colleagues-window";
+  windowMeta.textContent = `Просмотр: ${_timeWindowText()}`;
+  col.append(windowMeta);
+
+  const statusLabel = {
+    available: "Свободно",
+    mine: "Моё",
+    occupied: "Занято",
+    blocked: "Недоступно",
+    unknown: "Проверяется",
+  };
+
+  const spaceLabel = {
+    desk: "Рабочий стол",
+    meeting_room: "Переговорная",
+    call_room: "Call-room",
+    open_space: "Open Space",
+    lounge: "Лаунж",
+  };
+
+  for (const entry of entries) {
+    const { desk, visual } = entry;
+    const item = document.createElement("div");
+    item.className = `floor-place-item status-${visual.kind}`;
+    const baseDeskLabel = desk.label || `Место #${desk.id}`;
+    const metaBits = [spaceLabel[desk.space_type] || desk.space_type || "Место"];
+    if (visual.kind === "occupied" && visual.occupied?.user_id) {
+      metaBits.push(`занято: ${visual.occupied.user_id}`);
+    }
+
+    item.innerHTML = `
+      <div class="floor-place-main">
+        <div class="floor-place-title">${baseDeskLabel}</div>
+        <div class="floor-place-meta">${metaBits.join(" · ")}</div>
+      </div>
+      <div class="place-status-badge ${visual.kind}">${statusLabel[visual.kind] || statusLabel.unknown}</div>`;
+
+    item.addEventListener("click", () => {
+      if (_highlightedDeskId === desk.id) {
+        highlightDesk(null);
+        closeSidePanel();
+        item.classList.remove("active-place");
+        return;
+      }
+      document.querySelectorAll(".floor-place-item.active-place, .colleague-item.active-colleague")
+        .forEach((el) => el.classList.remove("active-place", "active-colleague"));
+      item.classList.add("active-place");
+      highlightDesk(desk.id);
+      centerOnMarker(desk.id);
+      const markerEl = _findMarkerElByDeskId(desk.id);
+      if (markerEl) showSidePanel(markerEl, desk);
+    });
+
+    col.append(item);
+  }
+
+  list.append(col);
+  updateSheetMiniSummary();
 }
 
 function renderColleagues() {
@@ -1415,21 +2701,24 @@ function renderColleagues() {
   const count = document.getElementById("colleagues-count");
   if (!list) return;
 
-  list.innerHTML = "";
-
-  let reservations = state.floorReservations;
-  if (_teamFilterActive) {
-    reservations = reservations.filter(
-      r => r.user_id === _username || state.team.has(r.user_id)
-    );
+  if (_statusFilter !== "all") {
+    renderFloorPlacesList();
+    return;
   }
 
+  list.innerHTML = "";
+
+  const reservations = _reservationsMatchingFilters();
+
   if (!reservations.length) {
-    const emptyMsg = _teamFilterActive
-      ? "Сегодня коллеги вашего отдела не забронировали места"
-      : "Никого на этаже";
+    const hasExtraFilters =
+      _activeSpaceFilters.size > 0 || _favFilterActive || _teamFilterActive;
+    const emptyMsg = hasExtraFilters
+      ? "По выбранным фильтрам на интервал нет совпадений"
+      : "На выбранный интервал никого нет на этаже";
     list.innerHTML = `<p class="empty" style="padding:20px 16px;font-size:12px">${emptyMsg}</p>`;
     if (count) count.textContent = "";
+    updateSheetMiniSummary();
     return;
   }
 
@@ -1437,6 +2726,10 @@ function renderColleagues() {
 
   const col = document.createElement("div");
   col.className = "colleague-list";
+  const windowMeta = document.createElement("div");
+  windowMeta.className = "colleagues-window";
+  windowMeta.textContent = `Просмотр: ${_timeWindowText()}`;
+  col.append(windowMeta);
 
   for (const r of reservations) {
     const desk = state.desks.find((d) => d.id === r.desk_id);
@@ -1460,7 +2753,7 @@ function renderColleagues() {
       </div>
       <div class="colleague-time">${time}</div>`;
 
-    if (!isMe && desk && typeof desk.position_x === "number") {
+    if (desk) {
       item.style.cursor = "pointer";
       (function(reservation, listItem) {
         listItem.addEventListener("click", () => {
@@ -1470,12 +2763,12 @@ function renderColleagues() {
             listItem.classList.remove("active-colleague");
             return;
           }
-          document.querySelectorAll(".colleague-item.active-colleague")
-            .forEach(el => el.classList.remove("active-colleague"));
+          document.querySelectorAll(".floor-place-item.active-place, .colleague-item.active-colleague")
+            .forEach(el => el.classList.remove("active-place", "active-colleague"));
           listItem.classList.add("active-colleague");
           highlightDesk(reservation.desk_id);
           centerOnMarker(reservation.desk_id);
-          const markerEl = deskSvgOverlay?.querySelector(`[data-desk-id="${reservation.desk_id}"]`);
+          const markerEl = _findMarkerElByDeskId(reservation.desk_id);
           const deskObj  = state.desks.find(d => d.id === reservation.desk_id);
           if (markerEl && deskObj) showSidePanel(markerEl, deskObj);
         });
@@ -1486,11 +2779,14 @@ function renderColleagues() {
   }
 
   list.append(col);
+  updateSheetMiniSummary();
 }
 
 // ── My bookings ─────────────────────────────────────────────────────────────
 
 function renderMyBookings(bookings) {
+  _myBookingsCount = Array.isArray(bookings) ? bookings.length : 0;
+  updateSheetMiniSummary();
   myBookingsContainer.innerHTML = "";
   if (!bookings.length) {
     myBookingsContainer.innerHTML = '<p class="empty">Нет активных бронирований</p>';
@@ -1536,14 +2832,7 @@ function renderMyBookings(bookings) {
   myBookingsContainer.append(list);
 }
 
-// ── Favorites filter ────────────────────────────────────────────────────────
-
-let _favFilterActive = false;
-
-// ── Space-type filter ────────────────────────────────────────────────────────
-
-let _activeSpaceFilters = new Set();
-
+// ── Unified filters ─────────────────────────────────────────────────────────
 const _SF_LABELS = {
   desk: "Рабочий стол", meeting_room: "Переговорная",
   call_room: "Call-room", open_space: "Open Space", lounge: "Лаунж",
@@ -1552,97 +2841,193 @@ const _SF_COLORS = {
   desk: "#059669", meeting_room: "#7c3aed",
   call_room: "#0891b2", open_space: "#65a30d", lounge: "#d97706",
 };
+const _STATUS_COLORS = {
+  all: "#475569",
+  available: "#16a34a",
+  mine: "#2563eb",
+  occupied: "#dc2626",
+  blocked: "#d97706",
+};
 
-function applySpaceFilter() {
-  const markers = deskSvgOverlay?.querySelectorAll(".desk-tile");
-  if (!markers) return;
-  markers.forEach((m) => {
-    if (_activeSpaceFilters.size === 0) {
-      m.classList.remove("filtered-out");
+function _saveFilterState() {
+  localStorage.setItem(LS_KEYS.statusFilter, _statusFilter);
+  localStorage.setItem(LS_KEYS.spaceFilters, JSON.stringify([..._activeSpaceFilters]));
+  localStorage.setItem(LS_KEYS.favFilter, _favFilterActive ? "1" : "0");
+  localStorage.setItem(LS_KEYS.teamFilter, _teamFilterActive ? "1" : "0");
+}
+
+function _teamDeskIdsForCurrentWindow() {
+  return new Set(
+    (state.floorReservations || [])
+      .filter((r) =>
+        r.status === "active"
+        && _reservationMatchesCurrentWindow(r)
+        && (state.team.has(r.user_id) || r.user_id === _username)
+      )
+      .map((r) => r.desk_id),
+  );
+}
+
+function _deskPassesFilters(desk, visualKind, teamDeskIds) {
+  if (!desk) return false;
+  const kind = visualKind || _deskAvailabilityState(desk).kind;
+  const st = desk.space_type || "desk";
+  if (_statusFilter !== "all" && kind !== _statusFilter) return false;
+  if (_activeSpaceFilters.size > 0 && !_activeSpaceFilters.has(st)) return false;
+  if (_favFilterActive && !state.favorites.has(desk.id)) return false;
+  if (_teamFilterActive && !teamDeskIds.has(desk.id)) return false;
+  return true;
+}
+
+function applyUnifiedDeskFilter() {
+  const markers = document.querySelectorAll(".desk-tile");
+  if (!markers.length) return;
+  const teamDeskIds = _teamDeskIdsForCurrentWindow();
+  markers.forEach((marker) => {
+    const desk = _findDeskByMarkerData(marker.dataset?.deskId || "", marker.dataset?.deskLabel || "");
+    if (!desk) {
+      marker.classList.remove("filtered-out");
       return;
     }
-    const hasMatch = [..._activeSpaceFilters].some(t => m.classList.contains("st-" + t));
-    m.classList.toggle("filtered-out", !hasMatch);
+    const visual = _deskAvailabilityState(desk);
+    const show = _deskPassesFilters(desk, visual.kind, teamDeskIds);
+    marker.classList.toggle("filtered-out", !show);
   });
 }
 
-function renderSpaceFilter(desks) {
+function renderFilterChips(desks) {
   const bar = document.getElementById("space-filter-bar");
   if (!bar) return;
-
-  const types = [...new Set(desks.map(d => d.space_type || "desk"))];
-  if (types.length <= 1) {
-    bar.style.display = "none";
-    bar.innerHTML = "";
-    _activeSpaceFilters.clear();
-    return;
-  }
-
+  const items = Array.isArray(desks) ? desks : [];
   bar.style.display = "";
   bar.innerHTML = "";
 
-  // "Все" pill
-  const allPill = document.createElement("button");
-  allPill.className = "space-filter-pill" + (_activeSpaceFilters.size === 0 ? " active" : "");
-  allPill.textContent = "Все";
-  allPill.style.backgroundColor = _activeSpaceFilters.size === 0 ? "#475569" : "";
-  allPill.addEventListener("click", () => {
-    _activeSpaceFilters.clear();
-    renderSpaceFilter(desks);
-    applySpaceFilter();
-  });
-  bar.append(allPill);
-
-  for (const t of types) {
-    const color   = _SF_COLORS[t] || "#888";
-    const label   = _SF_LABELS[t] || t;
-    const isActive = _activeSpaceFilters.has(t);
-
-    const pill = document.createElement("button");
-    pill.className = "space-filter-pill" + (isActive ? " active" : "");
-    if (isActive) pill.style.backgroundColor = color;
-
-    const dot = document.createElement("span");
-    dot.className = "space-filter-pill-dot";
-    dot.style.background = isActive ? "white" : color;
-
+  const makeChip = ({ label, active, color, onClick, dot = false }) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = `filter-chip${active ? " active" : ""}`;
+    chip.setAttribute("aria-pressed", active ? "true" : "false");
+    if (active && color) chip.style.backgroundColor = color;
+    if (dot) {
+      const dotEl = document.createElement("span");
+      dotEl.className = "filter-chip-dot";
+      dotEl.style.backgroundColor = active ? "#fff" : color;
+      chip.append(dotEl);
+    }
     const txt = document.createElement("span");
     txt.textContent = label;
+    chip.append(txt);
+    chip.addEventListener("click", onClick);
+    return chip;
+  };
 
-    pill.append(dot, txt);
-    pill.addEventListener("click", () => {
-      if (_activeSpaceFilters.has(t)) {
-        _activeSpaceFilters.delete(t);
-      } else {
-        _activeSpaceFilters.add(t);
-      }
-      renderSpaceFilter(desks);
-      applySpaceFilter();
-    });
-
-    bar.append(pill);
+  for (const kind of DESK_STATUS_FILTERS) {
+    const active = _statusFilter === kind;
+    bar.append(
+      makeChip({
+        label: DESK_STATUS_LABELS[kind],
+        active,
+        color: _STATUS_COLORS[kind],
+        dot: kind !== "all",
+        onClick: () => {
+          _statusFilter = kind;
+          _saveFilterState();
+          renderFilterChips(items);
+          applyUnifiedDeskFilter();
+          renderColleagues();
+          updateMyDeskFocusButton();
+        },
+      }),
+    );
   }
+
+  const types = [...new Set(items.map((d) => d.space_type || "desk"))];
+  if (types.length > 1) {
+    bar.append(
+      makeChip({
+        label: "Тип: все",
+        active: _activeSpaceFilters.size === 0,
+        color: "#475569",
+        onClick: () => {
+          _activeSpaceFilters.clear();
+          _saveFilterState();
+          renderFilterChips(items);
+          applyUnifiedDeskFilter();
+          renderColleagues();
+        },
+      }),
+    );
+    for (const t of types) {
+      const active = _activeSpaceFilters.has(t);
+      const color = _SF_COLORS[t] || "#64748b";
+      bar.append(
+        makeChip({
+          label: _SF_LABELS[t] || t,
+          active,
+          color,
+          dot: true,
+          onClick: () => {
+            if (_activeSpaceFilters.has(t)) _activeSpaceFilters.delete(t);
+            else _activeSpaceFilters.add(t);
+            _saveFilterState();
+            renderFilterChips(items);
+            applyUnifiedDeskFilter();
+            renderColleagues();
+          },
+        }),
+      );
+    }
+  }
+
+  bar.append(
+    makeChip({
+      label: "☆ Избранные",
+      active: _favFilterActive,
+      color: "#f59e0b",
+      onClick: () => {
+        _favFilterActive = !_favFilterActive;
+        if (_favFilterActive) _teamFilterActive = false;
+        _saveFilterState();
+        renderFilterChips(items);
+        applyUnifiedDeskFilter();
+        renderColleagues();
+      },
+    }),
+  );
+
+  bar.append(
+    makeChip({
+      label: "👥 Команда",
+      active: _teamFilterActive,
+      color: "#7c3aed",
+      onClick: () => {
+        _teamFilterActive = !_teamFilterActive;
+        if (_teamFilterActive) _favFilterActive = false;
+        _saveFilterState();
+        renderFilterChips(items);
+        applyUnifiedDeskFilter();
+        renderColleagues();
+      },
+    }),
+  );
 }
 
-let _teamFilterActive = false;
-
 function renderPlanMarkersFiltered() {
-  let desks = state.desks;
-  if (_favFilterActive) {
-    desks = desks.filter(d => state.favorites.has(d.id));
-  } else if (_teamFilterActive) {
-    // Show only desks booked by my team (or by me)
-    const teamDeskIds = new Set(
-      state.floorReservations
-        .filter(r => r.status === "active" && (state.team.has(r.user_id) || r.user_id === _username))
-        .map(r => r.desk_id)
-    );
-    desks = desks.filter(d => teamDeskIds.has(d.id));
-  }
-  renderPlanMarkers(deskSvgOverlay, desks);
+  renderPlanMarkers(deskSvgOverlay, state.desks);
 }
 
 // ── Events ──────────────────────────────────────────────────────────────────
+
+quickDateTodayBtn?.addEventListener("click", () => setDatePreset("today"));
+quickDateTomorrowBtn?.addEventListener("click", () => setDatePreset("tomorrow"));
+quickDateCustomBtn?.addEventListener("click", () => {
+  _datePreset = "custom";
+  _applyDatePresetButtons();
+  updateTimeWindowIndicator();
+  if (typeof dateInput?.showPicker === "function") {
+    try { dateInput.showPicker(); } catch { /* no-op */ }
+  }
+});
 
 officeSelect.addEventListener("change", (e) => {
   localStorage.setItem("dk_office", e.target.value);
@@ -1668,8 +3053,15 @@ function debouncedRefresh() {
   _refreshDebounce = setTimeout(refreshAvailability, 400);
 }
 dateInput.addEventListener("change", debouncedRefresh);
-startInput.addEventListener("change", debouncedRefresh);
-endInput.addEventListener("change", debouncedRefresh);
+dateInput.addEventListener("change", syncDatePresetFromInput);
+startInput.addEventListener("change", () => {
+  updateTimeWindowIndicator();
+  debouncedRefresh();
+});
+endInput.addEventListener("change", () => {
+  updateTimeWindowIndicator();
+  debouncedRefresh();
+});
 
 // Policies accordion toggle
 document.getElementById("policies-toggle")?.addEventListener("click", () => {
@@ -1677,37 +3069,6 @@ document.getElementById("policies-toggle")?.addEventListener("click", () => {
   const isOpen = policiesAccordion.classList.toggle("open");
   const btn = document.getElementById("policies-toggle");
   if (btn) btn.textContent = isOpen ? "Правила ▴" : "Правила ▾";
-});
-
-const favFilterBtn = document.getElementById("fav-filter-btn");
-favFilterBtn?.addEventListener("click", () => {
-  _favFilterActive = !_favFilterActive;
-  if (_favFilterActive) _teamFilterActive = false;
-  favFilterBtn.classList.toggle("btn-primary", _favFilterActive);
-  favFilterBtn.classList.toggle("btn-secondary", !_favFilterActive);
-  favFilterBtn.textContent = _favFilterActive ? "★ Только избранные" : "☆ Только избранные";
-  const teamBtn = document.getElementById("team-filter-btn");
-  if (teamBtn) {
-    teamBtn.classList.remove("btn-primary");
-    teamBtn.classList.add("btn-secondary");
-  }
-  renderPlanMarkersFiltered();
-  renderColleagues();
-});
-
-const teamFilterBtn = document.getElementById("team-filter-btn");
-teamFilterBtn?.addEventListener("click", () => {
-  _teamFilterActive = !_teamFilterActive;
-  if (_teamFilterActive) {
-    _favFilterActive = false;
-    favFilterBtn?.classList.remove("btn-primary");
-    favFilterBtn?.classList.add("btn-secondary");
-    if (favFilterBtn) favFilterBtn.textContent = "☆ Только избранные";
-  }
-  teamFilterBtn.classList.toggle("btn-primary", _teamFilterActive);
-  teamFilterBtn.classList.toggle("btn-secondary", !_teamFilterActive);
-  renderPlanMarkersFiltered();
-  renderColleagues();
 });
 
 logoutBtn.addEventListener("click", () => {
@@ -1727,8 +3088,21 @@ document.getElementById("notif-clear-btn")?.addEventListener("click", () => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
-    if (_isDrawerOpen) closeNotifDrawer();
-    else closeProfileModal();
+    if (appLayoutEl?.classList.contains("params-sheet-open")) {
+      setParamsSheetOpen(false);
+      return;
+    }
+    if (_isDrawerOpen) {
+      closeNotifDrawer();
+      return;
+    }
+    if (document.getElementById("profile-modal-overlay")?.classList.contains("open")) {
+      closeProfileModal();
+      return;
+    }
+    if (_isMobileViewport() && _sheetState !== "collapsed") {
+      setSheetState("collapsed");
+    }
   }
 });
 
@@ -1740,29 +3114,16 @@ document.getElementById("profile-modal-overlay")?.addEventListener("click", (e) 
 
 document.querySelectorAll(".panel-tab-btn").forEach(btn => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".panel-tab-btn").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-    const tab = btn.dataset.tab;
-    const floorEl    = document.getElementById("colleagues-section");
-    const bookingsEl = document.getElementById("panel-bookings-tab");
-    if (floorEl)    floorEl.style.display    = tab === "floor"    ? "" : "none";
-    if (bookingsEl) bookingsEl.style.display = tab === "bookings" ? "" : "none";
+    setActivePanelTab(btn.dataset.tab, { promoteMobile: true });
   });
-});
-
-// ── Mobile sheet toggle ───────────────────────────────────────────────────────
-
-const sheetToggleBtn = document.getElementById("sheet-toggle-btn");
-const panelColumnEl  = document.getElementById("panel-column");
-sheetToggleBtn?.addEventListener("click", () => {
-  const isOpen = panelColumnEl.classList.toggle("sheet-open");
-  sheetToggleBtn.classList.toggle("sheet-open", isOpen);
 });
 
 // ── Navigate to desk (cross-floor / cross-office) ────────────────────────────
 
-async function navigateToDesk(officeId, floorId, deskId) {
+async function navigateToDesk(officeId, floorId, deskId, opts = {}) {
+  const { showArrow = false } = opts;
   _pendingFocusDeskId = deskId;
+  _pendingFocusWithArrow = !!showArrow;
 
   // Switch office if needed
   if (String(officeSelect.value) !== String(officeId)) {
@@ -1784,12 +3145,10 @@ async function navigateToDesk(officeId, floorId, deskId) {
   } else {
     // Already on correct floor — focus immediately after markers render
     _pendingFocusDeskId = null;
+    const withArrow = _pendingFocusWithArrow;
+    _pendingFocusWithArrow = false;
     setTimeout(() => {
-      highlightDesk(deskId);
-      centerOnMarker(deskId);
-      const markerEl = deskSvgOverlay?.querySelector(`[data-desk-id="${deskId}"]`);
-      const deskObj  = state.desks.find(d => d.id === deskId);
-      if (markerEl && deskObj) showSidePanel(markerEl, deskObj);
+      focusDeskOnMap(deskId, { withArrow });
     }, 50);
   }
 }
@@ -1814,6 +3173,7 @@ async function navigateToDesk(officeId, floorId, deskId) {
     clearBtn.style.display = "none";
     closeDropdown();
     highlightDesk(null);
+    clearDeskSearchArrow();
   }
 
   function renderDropdown(users) {
@@ -1863,16 +3223,13 @@ async function navigateToDesk(officeId, floorId, deskId) {
         closeDropdown();
 
         if (loc && String(loc.floor_id) === String(floorSelect.value)) {
-          // Same floor — highlight and center
-          highlightDesk(loc.desk_id);
-          centerOnMarker(loc.desk_id);
-          const markerEl = deskSvgOverlay?.querySelector(`[data-desk-id="${loc.desk_id}"]`);
-          const deskObj  = state.desks.find(d => d.id === loc.desk_id);
-          if (markerEl && deskObj) showSidePanel(markerEl, deskObj);
+          // Same floor — highlight, center and arrow pointer.
+          focusDeskOnMap(loc.desk_id, { withArrow: true });
         } else if (loc && onOtherFloor) {
-          // Different floor — navigate automatically
-          navigateToDesk(loc.office_id, loc.floor_id, loc.desk_id);
+          // Different floor — navigate automatically and keep pointer arrow.
+          navigateToDesk(loc.office_id, loc.floor_id, loc.desk_id, { showArrow: true });
         } else {
+          clearDeskSearchArrow();
           addMessage(`У ${displayName} нет активной брони`, "info");
         }
       });
@@ -1889,6 +3246,7 @@ async function navigateToDesk(officeId, floorId, deskId) {
             parseInt(gotoBtn.dataset.office),
             parseInt(gotoBtn.dataset.floor),
             parseInt(gotoBtn.dataset.desk),
+            { showArrow: true },
           );
         });
       }
@@ -1938,23 +3296,59 @@ async function navigateToDesk(officeId, floorId, deskId) {
 
 // ── Init ────────────────────────────────────────────────────────────────────
 
+let _responsiveUiBound = false;
+function initResponsiveUiState() {
+  setParamsSheetOpen(false);
+  setSheetState(_sheetState, { persist: false });
+  setActivePanelTab(_activePanelTab);
+  updateSheetMiniSummary();
+
+  if (_responsiveUiBound) return;
+  _responsiveUiBound = true;
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (!_isMobileViewport()) setParamsSheetOpen(false);
+      setSheetState(_sheetState, { persist: false });
+    }, 80);
+  });
+}
+
 async function init() {
   if (window.lucide) lucide.createIcons();
+  bindMapControlsOnce();
+  initParamsSheetInteractions();
+  initMobileSheetInteractions();
+  initResponsiveUiState();
+  updateTimeWindowIndicator();
+  updateFitButtonsUI();
   _notifLoad();
   await checkApi();
   await loadOffices();
 
   const savedOffice = localStorage.getItem("dk_office");
   const savedFloor  = localStorage.getItem("dk_floor");
-  if (savedOffice) {
-    officeSelect.value = savedOffice;
-    await loadFloors(savedOffice);
-    await loadPolicies(savedOffice);
-    if (savedFloor && state.floors.some(f => String(f.id) === String(savedFloor))) {
-      floorSelect.value = savedFloor;
-      const floor = state.floors.find(f => String(f.id) === String(savedFloor));
+  const officeCandidate = savedOffice && state.offices.some(o => String(o.id) === String(savedOffice))
+    ? String(savedOffice)
+    : (state.offices[0] ? String(state.offices[0].id) : "");
+
+  if (officeCandidate) {
+    officeSelect.value = officeCandidate;
+    localStorage.setItem("dk_office", officeCandidate);
+    await loadFloors(officeCandidate);
+    await loadPolicies(officeCandidate);
+
+    const floorCandidate = savedFloor && state.floors.some(f => String(f.id) === String(savedFloor))
+      ? String(savedFloor)
+      : (state.floors[0] ? String(state.floors[0].id) : "");
+
+    if (floorCandidate) {
+      floorSelect.value = floorCandidate;
+      localStorage.setItem("dk_floor", floorCandidate);
+      const floor = state.floors.find(f => String(f.id) === String(floorCandidate));
       renderFloorPlan(floor);
-      await loadDesks(savedFloor);
+      await loadDesks(floorCandidate);
     }
   }
 
@@ -1967,19 +3361,19 @@ async function init() {
     // Clean URL without reload
     history.replaceState(null, "", window.location.pathname);
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const selectedDate = (dateInput?.value || _isoLocalDate(new Date()));
       const st    = startInput?.value || "";
       const et    = endInput?.value  || "";
-      let url = `/users/search?q=${encodeURIComponent(findParam)}&limit=5&date=${today}`;
+      let url = `/users/search?q=${encodeURIComponent(findParam)}&limit=5&date=${selectedDate}`;
       if (st) url += `&start_time=${encodeURIComponent(st)}`;
       if (et) url += `&end_time=${encodeURIComponent(et)}`;
       const results = await apiRequest(url);
       const user = results.find(u => u.username === findParam) || results[0];
       if (user?.location) {
         const loc = user.location;
-        navigateToDesk(loc.office_id, loc.floor_id, loc.desk_id);
+        navigateToDesk(loc.office_id, loc.floor_id, loc.desk_id, { showArrow: true });
       } else if (user) {
-        addMessage(`У ${user.full_name || findParam} нет брони на сегодня`, "info");
+        addMessage(`У ${user.full_name || findParam} нет брони на выбранный день`, "info");
       }
     } catch { /* silent */ }
   }

@@ -262,8 +262,10 @@ def cancel_noshow_reservations(db: Session) -> int:
         # Determine the applicable timeout: office-specific policy first, then global (None key), then default
         timeout = office_timeout.get(office_id, office_timeout.get(None, DEFAULT_TIMEOUT))
 
-        # Combine reservation_date + start_time to get the scheduled start as a naive UTC datetime
-        scheduled_start = datetime.combine(res.reservation_date, res.start_time)
+        # Combine reservation_date + start_time as timezone-aware datetime in APP_TIMEZONE
+        scheduled_start = datetime.combine(
+            res.reservation_date, res.start_time, tzinfo=ZoneInfo(settings.APP_TIMEZONE)
+        )
 
         if now_utc >= scheduled_start + timedelta(minutes=timeout):
             res.status = "cancelled"

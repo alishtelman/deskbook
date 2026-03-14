@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from sqlalchemy import text
 
-from . import crud, models, schemas
+from . import crud, models, schemas, map_service, layout_service, svg_import as svg_import_svc
 from .auth import get_password_hash, verify_password, create_access_token, require_admin, get_current_user
 from .config import settings
 from .database import Base, engine, get_db, SessionLocal
@@ -50,6 +50,7 @@ async def lifespan(app: FastAPI):
         "ALTER TABLE desks ADD COLUMN IF NOT EXISTS h FLOAT NOT NULL DEFAULT 0.05;",
         # User active/inactive flag
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;",
+        "ALTER TABLE IF EXISTS policies ADD COLUMN IF NOT EXISTS max_bookings_per_day INTEGER NOT NULL DEFAULT 1;",
     ]
     try:
         with engine.connect() as conn:
@@ -67,6 +68,73 @@ async def lifespan(app: FastAPI):
             conn.commit()
     except Exception as _exc:
         print(f"[startup migration] Warning: {_exc}")
+
+    # v2: floor map revision workflow
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS floor_map_revisions (
+                    id           SERIAL PRIMARY KEY,
+                    floor_id     INTEGER NOT NULL REFERENCES floors(id) ON DELETE CASCADE,
+                    status       VARCHAR(20) NOT NULL DEFAULT 'draft'
+                                 CONSTRAINT ck_fmr_status CHECK (status IN ('draft','published','archived')),
+                    plan_svg     TEXT,
+                    desks_json   TEXT NOT NULL DEFAULT '[]',
+                    zones_json   TEXT NOT NULL DEFAULT '[]',
+                    version      INTEGER NOT NULL DEFAULT 1,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    published_at TIMESTAMPTZ,
+                    created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL
+                )
+            """))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_fmr_floor_id ON floor_map_revisions(floor_id)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE floors ADD COLUMN IF NOT EXISTS published_map_revision_id"
+                " INTEGER REFERENCES floor_map_revisions(id) ON DELETE SET NULL"
+            ))
+            conn.execute(text(
+                "ALTER TABLE floors ADD COLUMN IF NOT EXISTS draft_map_revision_id"
+                " INTEGER REFERENCES floor_map_revisions(id) ON DELETE SET NULL"
+            ))
+            conn.commit()
+    except Exception as _exc:
+        print(f"[startup migration v2] Warning: {_exc}")
+
+    # v3 migration — layout_json column + locking + audit log
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(
+                "ALTER TABLE floor_map_revisions ADD COLUMN IF NOT EXISTS layout_json TEXT"
+            ))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS floor_locks (
+                    id         SERIAL PRIMARY KEY,
+                    floor_id   INTEGER NOT NULL UNIQUE REFERENCES floors(id) ON DELETE CASCADE,
+                    locked_by  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    locked_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    expires_at TIMESTAMPTZ NOT NULL
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS map_audit_log (
+                    id          SERIAL PRIMARY KEY,
+                    floor_id    INTEGER NOT NULL REFERENCES floors(id) ON DELETE CASCADE,
+                    user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    action      VARCHAR(50) NOT NULL,
+                    revision_id INTEGER,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    note        TEXT
+                )
+            """))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_mal_floor_id ON map_audit_log(floor_id)"
+            ))
+            conn.commit()
+    except Exception as _exc:
+        print(f"[startup migration v3] Warning: {_exc}")
 
     Base.metadata.create_all(bind=engine)
 
@@ -198,10 +266,15 @@ async def search_users(
 
 @app.get("/users", response_model=list[schemas.UserPublic])
 async def list_users(
+    search: Optional[str] = Query(None, description="Filter by username or full_name"),
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[models.User]:
-    return crud.get_users(db)
+    users = crud.get_users(db)
+    if search:
+        q = search.lower()
+        users = [u for u in users if q in u.username.lower() or (u.full_name and q in u.full_name.lower())]
+    return users
 
 
 @app.get("/admin/users", response_model=list[schemas.UserResponse], tags=["admin"])
@@ -298,6 +371,14 @@ async def remove_favorite(
     except ValueError:
         raise HTTPException(404, "Не найдено в избранном")
     return Response(status_code=204)
+
+
+@app.get("/users/me", response_model=schemas.UserResponse, tags=["users"])
+async def get_me(
+    current_user: models.User = Depends(get_current_user),
+) -> models.User:
+    """Return the currently authenticated user's full profile."""
+    return current_user
 
 
 @app.get("/users/{username}", response_model=schemas.UserPublic)
@@ -540,6 +621,320 @@ async def create_desks_from_map(
         raise HTTPException(status_code=404, detail="Floor not found")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Floor map revisions (SVG-based editor — draft/published workflow)
+# ---------------------------------------------------------------------------
+
+@app.get("/floors/{floor_id}/map", response_model=schemas.FloorMapRevisionResponse, dependencies=[Depends(require_admin)])
+async def get_floor_map(
+    floor_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.FloorMapRevisionResponse:
+    """Admin: returns draft if one exists, otherwise published. 404 if neither."""
+    result = map_service.get_draft_or_published(db, floor_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="No map revision found for this floor")
+    return result
+
+
+@app.get("/floors/{floor_id}/map/published", response_model=schemas.FloorMapRevisionResponse)
+async def get_published_floor_map(
+    floor_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.FloorMapRevisionResponse:
+    """Any authenticated user: returns only the published revision. 404 if none."""
+    try:
+        result = map_service.get_published_response(db, floor_id)
+    except map_service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    if result is None:
+        raise HTTPException(status_code=404, detail="No published map for this floor")
+    return result
+
+
+@app.put(
+    "/floors/{floor_id}/map/draft",
+    response_model=schemas.FloorMapRevisionResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def save_floor_map_draft(
+    floor_id: int,
+    payload: schemas.FloorMapRevisionPayload,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.FloorMapRevisionResponse:
+    """Admin: save full draft snapshot."""
+    try:
+        return map_service.save_draft_revision(db, floor_id, payload, user_id=current_user.id)
+    except map_service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except map_service.ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post(
+    "/floors/{floor_id}/map/draft/plan-svg",
+    response_model=schemas.FloorMapRevisionResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def upload_floor_plan_svg(
+    floor_id: int,
+    request: Request,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.FloorMapRevisionResponse:
+    """Admin: upload raw SVG body (max 5 MB). Sanitized and stored in draft."""
+    raw_svg = (await request.body()).decode("utf-8", errors="replace")
+    try:
+        return map_service.upload_svg_to_draft(db, floor_id, raw_svg, user_id=current_user.id)
+    except map_service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post(
+    "/floors/{floor_id}/map/publish",
+    response_model=schemas.FloorMapRevisionResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def publish_floor_map(
+    floor_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.FloorMapRevisionResponse:
+    """Admin: atomically publish the current draft revision."""
+    try:
+        return map_service.publish_draft_revision(db, floor_id, user_id=current_user.id)
+    except map_service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.delete(
+    "/floors/{floor_id}/map/draft",
+    status_code=204,
+    response_class=Response,
+    dependencies=[Depends(require_admin)],
+)
+async def discard_floor_map_draft(
+    floor_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Admin: discard draft revision. 204 no-op if no draft exists."""
+    try:
+        map_service.discard_draft_revision(db, floor_id)
+    except map_service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Layout v2 — canonical LayoutDocument CRUD + lock + import
+# ---------------------------------------------------------------------------
+
+@app.get("/floors/{floor_id}/layout", response_model=schemas.LayoutDocumentResponse,
+         dependencies=[Depends(require_admin)])
+async def get_floor_layout(
+    floor_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.LayoutDocumentResponse:
+    result = layout_service.get_draft_or_published(db, floor_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="No layout found for this floor")
+    return result
+
+
+@app.get("/floors/{floor_id}/layout/published", response_model=schemas.LayoutDocumentResponse)
+async def get_floor_layout_published(
+    floor_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.LayoutDocumentResponse:
+    try:
+        result = layout_service.get_published(db, floor_id)
+    except layout_service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    if result is None:
+        raise HTTPException(status_code=404, detail="No published layout")
+    return result
+
+
+@app.put("/floors/{floor_id}/layout/draft", response_model=schemas.LayoutDocumentResponse,
+         dependencies=[Depends(require_admin)])
+async def save_floor_layout_draft(
+    floor_id: int,
+    request: Request,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.LayoutDocumentResponse:
+    """Admin: save canonical layout document. Body: {version, layout: LayoutDocument}."""
+    try:
+        body = await request.json()
+        version = int(body.get("version", 0))
+        doc = schemas.LayoutDocument(**body.get("layout", {}))
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    try:
+        return layout_service.save_draft(db, floor_id, doc, version, user_id=current_user.id)
+    except layout_service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except layout_service.ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/floors/{floor_id}/layout/publish", response_model=schemas.LayoutDocumentResponse,
+          dependencies=[Depends(require_admin)])
+async def publish_floor_layout(
+    floor_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.LayoutDocumentResponse:
+    try:
+        return layout_service.publish(db, floor_id, user_id=current_user.id)
+    except layout_service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/floors/{floor_id}/layout/sync-desks", response_model=schemas.LayoutDeskSyncResult,
+          dependencies=[Depends(require_admin)])
+async def sync_floor_layout_desks(
+    floor_id: int,
+    source: str = Query("published", pattern="^(published|draft)$"),
+    cleanup: bool = Query(False),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.LayoutDeskSyncResult:
+    try:
+        return layout_service.sync_desks_for_floor(
+            db, floor_id, source=source, cleanup=cleanup, user_id=current_user.id
+        )
+    except layout_service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.delete("/floors/{floor_id}/layout/draft", status_code=204, response_class=Response,
+            dependencies=[Depends(require_admin)])
+async def discard_floor_layout_draft(
+    floor_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    layout_service.discard(db, floor_id, user_id=current_user.id)
+    return Response(status_code=204)
+
+
+@app.get("/floors/{floor_id}/layout/history", response_model=list[schemas.AuditLogEntry],
+         dependencies=[Depends(require_admin)])
+async def get_floor_layout_history(
+    floor_id: int,
+    db: Session = Depends(get_db),
+) -> list[schemas.AuditLogEntry]:
+    try:
+        return layout_service.get_history(db, floor_id)
+    except layout_service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/floors/{floor_id}/layout/revisions", response_model=list[schemas.LayoutRevisionSummary],
+         dependencies=[Depends(require_admin)])
+async def get_floor_layout_revisions(
+    floor_id: int,
+    limit: int = Query(100, ge=1, le=300),
+    db: Session = Depends(get_db),
+) -> list[schemas.LayoutRevisionSummary]:
+    try:
+        return layout_service.list_revisions(db, floor_id, limit=limit)
+    except layout_service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/floors/{floor_id}/layout/revisions/{revision_id}", response_model=schemas.LayoutDocumentResponse,
+         dependencies=[Depends(require_admin)])
+async def get_floor_layout_revision(
+    floor_id: int,
+    revision_id: int,
+    db: Session = Depends(get_db),
+) -> schemas.LayoutDocumentResponse:
+    try:
+        return layout_service.get_revision(db, floor_id, revision_id)
+    except layout_service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/floors/{floor_id}/layout/revisions/{revision_id}/restore", response_model=schemas.LayoutDocumentResponse,
+          dependencies=[Depends(require_admin)])
+async def restore_floor_layout_revision(
+    floor_id: int,
+    revision_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.LayoutDocumentResponse:
+    try:
+        return layout_service.restore_revision_to_draft(db, floor_id, revision_id, user_id=current_user.id)
+    except layout_service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+# Lock management
+@app.post("/floors/{floor_id}/lock", response_model=schemas.FloorLockOut,
+          dependencies=[Depends(require_admin)])
+async def acquire_floor_lock(
+    floor_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.FloorLockOut:
+    try:
+        return layout_service.acquire_lock(db, floor_id, current_user.id)
+    except layout_service.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except layout_service.LockError as exc:
+        raise HTTPException(status_code=423, detail=str(exc))
+
+
+@app.delete("/floors/{floor_id}/lock", status_code=204, response_class=Response,
+            dependencies=[Depends(require_admin)])
+async def release_floor_lock(
+    floor_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    layout_service.release_lock(db, floor_id, current_user.id)
+    return Response(status_code=204)
+
+
+@app.get("/floors/{floor_id}/lock")
+async def get_floor_lock(
+    floor_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    lock = layout_service.get_lock(db, floor_id)
+    if lock is None:
+        return {"locked": False}
+    return {"locked": True, **lock.model_dump()}
+
+
+# SVG import classifier
+@app.post("/floors/{floor_id}/layout/import", response_model=schemas.ImportResult,
+          dependencies=[Depends(require_admin)])
+async def import_floor_svg(
+    floor_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> schemas.ImportResult:
+    raw_svg = (await request.body()).decode("utf-8", errors="replace")
+    try:
+        return svg_import_svc.classify_svg(raw_svg)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

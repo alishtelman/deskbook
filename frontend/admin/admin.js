@@ -60,12 +60,15 @@ const SPACE_COLORS = {
   lounge:       "#d97706",
 };
 
+const ADMIN_SIDEBAR_COLLAPSED_KEY = "admin_sidebar_collapsed";
+
 // ── DOM refs ──────────────────────────────────────────────────────────────────
-const loginOverlay     = document.getElementById("login-overlay");
-const loginError       = document.getElementById("login-error");
-const adminApp         = document.getElementById("admin-app");
-const sidebarUsername  = document.getElementById("sidebar-username");
-const logoutBtn        = document.getElementById("logout-btn");
+const loginOverlay       = document.getElementById("login-overlay");
+const loginError         = document.getElementById("login-error");
+const adminApp           = document.getElementById("admin-app");
+const sidebarUsername    = document.getElementById("sidebar-username");
+const logoutBtn          = document.getElementById("logout-btn");
+const adminSidebarToggle = document.getElementById("admin-sidebar-toggle");
 
 // Tables
 const officesBody      = document.getElementById("offices-body");
@@ -92,6 +95,7 @@ const policyMaxDays      = document.getElementById("policy-max-days");
 const policyMinDur       = document.getElementById("policy-min-dur");
 const policyMaxDur       = document.getElementById("policy-max-dur");
 const policyNoshow       = document.getElementById("policy-noshow");
+const policyMaxPerDay    = document.getElementById("policy-max-per-day");
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const state = {
@@ -123,7 +127,31 @@ function showAdminUI(username) {
   loginOverlay.classList.add("hidden");
   adminApp.classList.remove("hidden");
   sidebarUsername.textContent = username;
+  applyAdminSidebarState(isAdminSidebarCollapsed(), false);
   if (window.lucide) lucide.createIcons();
+}
+
+function isAdminSidebarCollapsed() {
+  return localStorage.getItem(ADMIN_SIDEBAR_COLLAPSED_KEY) === "1";
+}
+
+function applyAdminSidebarState(collapsed, persist) {
+  if (adminApp) adminApp.classList.toggle("sidebar-collapsed", !!collapsed);
+  if (adminSidebarToggle) {
+    adminSidebarToggle.setAttribute("aria-expanded", String(!collapsed));
+    adminSidebarToggle.title = collapsed ? "Показать меню" : "Скрыть меню";
+  }
+  if (persist !== false) {
+    localStorage.setItem(ADMIN_SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+  }
+}
+
+function initAdminSidebarToggle() {
+  if (!adminSidebarToggle) return;
+  applyAdminSidebarState(isAdminSidebarCollapsed(), false);
+  adminSidebarToggle.addEventListener("click", function () {
+    applyAdminSidebarState(!adminApp.classList.contains("sidebar-collapsed"), true);
+  });
 }
 
 function showLoginOverlay() {
@@ -150,6 +178,11 @@ function showToast(text, type) {
 
 // Backwards compat alias
 function addMessage(text, type) { showToast(text, type); }
+
+function authHeader() {
+  var token = getToken();
+  return token ? { Authorization: "Bearer " + token } : {};
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 async function apiRequest(path, options) {
@@ -472,7 +505,7 @@ function renderDesksTable() {
 function renderPoliciesTable() {
   policiesBody.innerHTML = "";
   if (!state.policies.length) {
-    policiesBody.innerHTML = '<tr><td colspan="7" class="empty">Нет политик.</td></tr>';
+    policiesBody.innerHTML = '<tr><td colspan="8" class="empty">Нет политик.</td></tr>';
     renderPagination('policies-pagination', 0, 'policies');
     return;
   }
@@ -486,6 +519,7 @@ function renderPoliciesTable() {
       "<td>" + p.min_days_ahead + "–" + p.max_days_ahead + "</td>" +
       "<td>" + p.min_duration_minutes + "–" + p.max_duration_minutes + "</td>" +
       "<td>" + p.no_show_timeout_minutes + "</td>" +
+      "<td>" + (p.max_bookings_per_day || 1) + "</td>" +
       "<td></td>"
     );
     tr.querySelector("td:last-child").append(
@@ -555,7 +589,7 @@ function populateOfficeSelects() {
 }
 
 function populateFloorSelects() {
-  [planFloorSelect, document.getElementById("placement-floor-select")].forEach(function (sel) {
+  [planFloorSelect].forEach(function (sel) {
     if (!sel) return;
     var val = sel.value;
     sel.innerHTML = '<option value="">Выберите этаж</option>';
@@ -567,6 +601,9 @@ function populateFloorSelects() {
     });
     if (val) sel.value = val;
   });
+  if (typeof populateEdFloorSelect === "function") {
+    populateEdFloorSelect(state.floors, state.offices);
+  }
 }
 
 // ── Placement editor ──────────────────────────────────────────────────────────
@@ -1371,10 +1408,16 @@ document.querySelectorAll(".nav-item[data-tab]").forEach(function (btn) {
     document.querySelectorAll(".tab-content").forEach(function (t) { t.classList.add("hidden"); });
     btn.classList.add("active");
     document.getElementById("tab-" + btn.dataset.tab).classList.remove("hidden");
+    document.dispatchEvent(new CustomEvent("admin:tab-change", { detail: { tab: btn.dataset.tab } }));
     if (btn.dataset.tab === "analytics") loadAnalytics();
     if (btn.dataset.tab === "users") loadUsers();
+    if (btn.dataset.tab === "editor" && typeof populateEdFloorSelect === "function") {
+      populateEdFloorSelect(state.floors, state.offices);
+    }
   });
 });
+
+initAdminSidebarToggle();
 
 // ── Reservation filters ───────────────────────────────────────────────────────
 document.getElementById("apply-filters-btn").addEventListener("click", loadReservations);
@@ -1535,10 +1578,12 @@ document.getElementById("create-policy-btn").addEventListener("click", async fun
         min_duration_minutes: Number(policyMinDur.value),
         max_duration_minutes: Number(policyMaxDur.value),
         no_show_timeout_minutes: Number(policyNoshow.value),
+        max_bookings_per_day: Number(policyMaxPerDay && policyMaxPerDay.value) || 1,
       }),
     });
     showToast("Политика «" + name + "» создана.", "success");
     policyName.value = "";
+    if (policyMaxPerDay) policyMaxPerDay.value = "1";
     await loadPolicies();
   } catch (e) {
     showToast("Ошибка: " + e.message, "error");
@@ -1701,14 +1746,14 @@ async function init() {
     try {
       await apiRequest("/offices");
       showAdminUI(username);
-      initPlacementEditor();
+      if (typeof initFloorEditor === "function") initFloorEditor();
       await loadAll();
     } catch {
       clearToken();
     }
   } else {
     showLoginOverlay();
-    initPlacementEditor();
+    if (typeof initFloorEditor === "function") initFloorEditor();
     if (window.lucide) lucide.createIcons();
   }
 }

@@ -69,7 +69,7 @@ def get_current_user(
 def require_admin(
     token: Optional[str] = Depends(_oauth2_scheme),
     db: Session = Depends(get_db),
-) -> None:
+) -> models.User:
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -88,3 +88,4 @@ def require_admin(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin role required",
         )
+    return user

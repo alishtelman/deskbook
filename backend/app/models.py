@@ -74,6 +74,24 @@ class Floor(Base):
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     plan_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    published_map_revision_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey(
+            "floor_map_revisions.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_floor_published_rev",
+        ),
+        nullable=True,
+    )
+    draft_map_revision_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey(
+            "floor_map_revisions.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_floor_draft_rev",
+        ),
+        nullable=True,
+    )
 
     office: Mapped[Office] = relationship("Office", back_populates="floors")
     desks: Mapped[list[Desk]] = relationship(
@@ -81,6 +99,14 @@ class Floor(Base):
     )
 
     __table_args__ = (Index("idx_floors_office_id", "office_id"),)
+
+    @property
+    def has_published_map(self) -> bool:
+        return self.published_map_revision_id is not None
+
+    @property
+    def has_draft_map(self) -> bool:
+        return self.draft_map_revision_id is not None
 
 
 class Desk(Base):
@@ -162,6 +188,9 @@ class Policy(Base):
     no_show_timeout_minutes: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="15"
     )
+    max_bookings_per_day: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="1"
+    )
 
     office: Mapped[Optional[Office]] = relationship("Office", back_populates="policies")
 
@@ -173,6 +202,10 @@ class Policy(Base):
         CheckConstraint(
             "min_days_ahead <= max_days_ahead",
             name="ck_policies_days_order",
+        ),
+        CheckConstraint(
+            "max_bookings_per_day >= 1",
+            name="ck_policies_max_bookings_per_day",
         ),
         Index("idx_policies_office_id", "office_id"),
     )
@@ -191,3 +224,52 @@ class FavoriteDesk(Base):
     user_id = Column(String(120), nullable=False, index=True)
     desk_id = Column(Integer, ForeignKey("desks.id", ondelete="CASCADE"), nullable=False)
     __table_args__ = (UniqueConstraint("user_id", "desk_id", name="uq_favorite_desk"),)
+
+
+class FloorMapRevision(Base):
+    __tablename__ = "floor_map_revisions"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    floor_id     = Column(Integer, ForeignKey("floors.id", ondelete="CASCADE"), nullable=False)
+    status       = Column(String(20), nullable=False, server_default="draft")
+    plan_svg     = Column(Text, nullable=True)
+    desks_json   = Column(Text, nullable=False, server_default="[]")
+    zones_json   = Column(Text, nullable=False, server_default="[]")
+    version      = Column(Integer, nullable=False, server_default="1")
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at   = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    published_at = Column(DateTime(timezone=True), nullable=True)
+    created_by   = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    layout_json  = Column(Text, nullable=True)   # canonical LayoutDocument JSON (v2 editor)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('draft','published','archived')", name="ck_fmr_status"),
+        Index("idx_fmr_floor_id", "floor_id"),
+    )
+
+
+class FloorLock(Base):
+    """Floor-level edit lock so only one admin edits at a time."""
+    __tablename__ = "floor_locks"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    floor_id   = Column(Integer, ForeignKey("floors.id", ondelete="CASCADE"), nullable=False, unique=True)
+    locked_by  = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    locked_at  = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class MapAuditLog(Base):
+    """Audit trail for map publish/discard/rollback events."""
+    __tablename__ = "map_audit_log"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    floor_id    = Column(Integer, ForeignKey("floors.id", ondelete="CASCADE"), nullable=False)
+    user_id     = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    action      = Column(String(50), nullable=False)  # saved|published|discarded|rolled_back
+    revision_id = Column(Integer, nullable=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    note        = Column(Text, nullable=True)
+
+    __table_args__ = (Index("idx_mal_floor_id", "floor_id"),)

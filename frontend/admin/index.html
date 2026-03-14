@@ -8,6 +8,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./editor.css">
 </head>
 <body>
   <!-- Auth overlay -->
@@ -55,6 +56,10 @@
           <i data-lucide="layers" style="width:15px;height:15px"></i>
           Этажи
         </button>
+        <button class="nav-item" data-tab="editor">
+          <i data-lucide="pencil-ruler" style="width:15px;height:15px"></i>
+          Редактор
+        </button>
         <button class="nav-item" data-tab="policies">
           <i data-lucide="file-text" style="width:15px;height:15px"></i>
           Политики
@@ -84,6 +89,9 @@
 
     <!-- Main content area -->
     <main class="main-content">
+      <div class="main-toolbar">
+        <button id="admin-sidebar-toggle" class="main-sidebar-toggle" type="button" title="Скрыть меню" aria-expanded="true">☰</button>
+      </div>
 
       <!-- Offices tab -->
       <div id="tab-offices" class="tab-content">
@@ -177,92 +185,478 @@
           <button id="upload-plan-btn" class="btn btn-primary" style="margin-top:16px">Загрузить план</button>
         </div>
 
-        <!-- Placement editor -->
-        <div class="form-panel" style="margin-top:12px" id="placement-panel">
-          <h3>Редактор размещения столов</h3>
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
-            <div class="field" style="max-width:280px;margin:0">
-              <select id="placement-floor-select"><option value="">Выберите этаж</option></select>
+        <!-- Планировка управляется через вкладку «Редактор» -->
+      </div>
+
+      <!-- Floor Editor tab -->
+      <div id="tab-editor" class="tab-content hidden">
+
+        <!-- Toolbar -->
+        <div id="ed-toolbar">
+          <div class="ed-toolbar-row">
+            <div id="ed-toolbar-left">
+              <div class="ed-floor-picker">
+                <label for="ed-floor-select">Этаж</label>
+                <select id="ed-floor-select"><option value="">Выберите этаж…</option></select>
+              </div>
+              <span id="ed-status-badge">НЕТ КАРТЫ</span>
+              <span id="ed-lock-status">Свободно для редактирования</span>
+              <button class="ed-btn ed-btn-ghost" id="ed-lock-btn" title="Захватить редактирование">Захватить</button>
             </div>
-            <div id="placement-toolbar" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-              <button id="mode-select-btn" class="btn btn-secondary btn-sm placement-mode-btn active" data-mode="select">↖ Выбор</button>
-              <button id="mode-desk-btn"   class="btn btn-secondary btn-sm placement-mode-btn" data-mode="desk">+ Стол</button>
-              <button id="mode-room-btn"   class="btn btn-secondary btn-sm placement-mode-btn" data-mode="room">+ Переговорная</button>
-              <span style="width:1px;height:22px;background:var(--border);display:inline-block;margin:0 2px"></span>
-              <button id="undo-btn" class="btn btn-secondary btn-sm" title="Отменить (Ctrl+Z)" disabled>↩ Отмена</button>
-              <button id="redo-btn" class="btn btn-secondary btn-sm" title="Повторить (Ctrl+Y)" disabled>↪ Повтор</button>
-              <span style="width:1px;height:22px;background:var(--border);display:inline-block;margin:0 2px"></span>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;color:var(--text-2);white-space:nowrap">
-                <input type="checkbox" id="snap-toggle" style="cursor:pointer"> Сетка
-              </label>
+            <div id="ed-actions">
+              <button class="ed-btn ed-btn-ghost ed-btn-icon" id="ed-grid-btn" title="Сетка (G)">⊞</button>
+              <button class="ed-btn ed-btn-ghost" id="ed-fit-btn" title="По размеру (F)">По размеру</button>
+              <button class="ed-btn ed-btn-ghost" id="ed-sync-bg-btn" title="Подогнать SVG под фон">Фон = SVG</button>
+              <button class="ed-btn ed-btn-ghost" id="ed-bg-adjust-btn" title="Подвинуть / масштабировать фон">Правка фона</button>
+              <button class="ed-btn ed-btn-ghost" id="ed-clear-bg-btn" title="Убрать фоновое изображение">Убрать фон</button>
+              <button class="ed-btn ed-btn-ghost" id="ed-sync-desks-btn" title="Синхронизировать места для бронирования">Синх. мест</button>
+              <button class="ed-btn ed-btn-ghost" id="ed-import-btn">Импорт</button>
+              <button class="ed-btn ed-btn-ghost" id="ed-history-btn">История</button>
+              <div class="ed-toolbar-sep"></div>
+              <button class="ed-btn ed-btn-primary" id="ed-save-btn" disabled>Сохранить</button>
+              <button class="ed-btn ed-btn-green" id="ed-publish-btn" disabled>Опубликовать</button>
+              <button class="ed-btn ed-btn-danger" id="ed-discard-btn" disabled>Отменить</button>
             </div>
-            <p style="font-size:12px;color:var(--text-2);margin:0">
-              Выберите режим, нажмите на план — добавить. Перетащите — переместить. Del — удалить. Ctrl+Z/Y — отмена/повтор.
-            </p>
           </div>
-          <div id="placement-area" style="display:none">
-            <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap">
-              <div style="position:relative;display:inline-block;flex-shrink:0;max-width:680px">
-                <img id="placement-plan-img" style="max-width:680px;max-height:700px;width:auto;height:auto;display:block;border-radius:8px;border:1px solid var(--border)" alt="план">
-                <div id="placement-overlay" style="position:absolute;inset:0">
-                  <svg id="placement-svg" style="width:100%;height:100%;overflow:visible" viewBox="0 0 1000 1000" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg"></svg>
+
+          <div class="ed-toolbar-row ed-toolbar-row-secondary">
+            <div id="ed-modes">
+              <div class="ed-mode-group">
+                <button class="ed-mode-btn active" data-mode="select" title="Выбор (V)">Выбор <span class="kbd">V</span></button>
+                <button class="ed-mode-btn" data-mode="pan" title="Рука (H)">Панорама <span class="kbd">H</span></button>
+              </div>
+              <div class="ed-toolbar-sep"></div>
+              <div class="ed-mode-group">
+                <button class="ed-mode-btn" data-mode="wall" title="Стена (W)">Стена <span class="kbd">W</span></button>
+                <button class="ed-mode-btn" data-mode="boundary" title="Граница (B)">Зона <span class="kbd">B</span></button>
+                <button class="ed-mode-btn" data-mode="partition" title="Перегородка (P)">Перегородка <span class="kbd">P</span></button>
+                <button class="ed-mode-btn" data-mode="door" title="Дверь (O)">Дверь <span class="kbd">O</span></button>
+              </div>
+              <div class="ed-toolbar-sep"></div>
+              <button class="ed-mode-btn" data-mode="desk" title="Стол (D)">Место <span class="kbd">D</span></button>
+            </div>
+
+            <div class="ed-kpis">
+              <div class="ed-kpi">
+                <span class="ed-kpi-label">Всего мест</span>
+                <strong class="ed-kpi-value" id="ed-kpi-total">0</strong>
+              </div>
+              <div class="ed-kpi">
+                <span class="ed-kpi-label">Свободно</span>
+                <strong class="ed-kpi-value" id="ed-kpi-available">0</strong>
+              </div>
+              <div class="ed-kpi">
+                <span class="ed-kpi-label">Fixed</span>
+                <strong class="ed-kpi-value" id="ed-kpi-fixed">0</strong>
+              </div>
+              <div class="ed-kpi">
+                <span class="ed-kpi-label">Недоступно</span>
+                <strong class="ed-kpi-value" id="ed-kpi-disabled">0</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="ed-toolbar-row ed-toolbar-row-tertiary ed-hidden" id="ed-desk-bulk-panel">
+            <div class="ed-bulk-field">
+              <label for="ed-desk-place-mode">Вставка</label>
+              <select id="ed-desk-place-mode">
+                <option value="single">Одиночно</option>
+                <option value="block">Блок</option>
+              </select>
+            </div>
+            <div class="ed-bulk-field">
+              <label for="ed-desk-block-pattern">Шаблон</label>
+              <select id="ed-desk-block-pattern">
+                <option value="rows">Ряды</option>
+                <option value="double">Двойной ряд</option>
+              </select>
+            </div>
+            <div class="ed-bulk-field">
+              <label for="ed-desk-block-axis">Ориентация</label>
+              <select id="ed-desk-block-axis">
+                <option value="horizontal">Горизонтально</option>
+                <option value="vertical">Вертикально</option>
+              </select>
+            </div>
+            <div class="ed-bulk-field">
+              <label for="ed-desk-width">Ширина места</label>
+              <input id="ed-desk-width" type="number" min="4" step="1" value="28">
+            </div>
+            <div class="ed-bulk-field">
+              <label for="ed-desk-height">Высота места</label>
+              <input id="ed-desk-height" type="number" min="4" step="1" value="16">
+            </div>
+            <div class="ed-bulk-field">
+              <label for="ed-desk-seats-per-row">Мест в ряду</label>
+              <input id="ed-desk-seats-per-row" type="number" min="1" max="100" value="6">
+            </div>
+            <div class="ed-bulk-field" id="ed-desk-rows-field">
+              <label for="ed-desk-row-count">Рядов</label>
+              <input id="ed-desk-row-count" type="number" min="1" max="50" value="2">
+            </div>
+            <div class="ed-bulk-field ed-hidden" id="ed-desk-pairs-field">
+              <label for="ed-desk-pair-count">Пар</label>
+              <input id="ed-desk-pair-count" type="number" min="1" max="25" value="1">
+            </div>
+            <div class="ed-bulk-note" id="ed-desk-bulk-note">Режим блока: клик + drag для превью, затем клик для подтверждения, Esc — отмена</div>
+            <div class="ed-bulk-conflicts" id="ed-desk-bulk-conflicts" aria-live="polite"></div>
+          </div>
+        </div>
+
+        <!-- Body -->
+        <div id="ed-body">
+
+          <!-- Left: object list -->
+          <div id="ed-left">
+            <div id="ed-left-header">
+              <div>
+                <span>Инвентарь</span>
+                <p class="ed-panel-subtitle">Объекты и зоны этажа</p>
+              </div>
+              <button class="ed-toggle-btn" id="ed-left-collapse">◀</button>
+            </div>
+            <input id="ed-obj-search" placeholder="Поиск по метке или типу" autocomplete="off">
+            <div id="ed-obj-list">
+              <p style="color:#64748b;font-size:12px;padding:8px 10px">Загрузите этаж, чтобы увидеть объекты.</p>
+            </div>
+          </div>
+
+          <!-- Canvas -->
+          <div id="ed-canvas-wrap" class="mode-select">
+            <div id="ed-canvas-top">
+              <div class="ed-canvas-legend">
+                <span class="ed-legend-item"><i class="ed-legend-dot available"></i>Свободно</span>
+                <span class="ed-legend-item"><i class="ed-legend-dot fixed"></i>Закреплено</span>
+                <span class="ed-legend-item"><i class="ed-legend-dot occupied"></i>Занято</span>
+                <span class="ed-legend-item"><i class="ed-legend-dot disabled"></i>Отключено</span>
+              </div>
+              <span class="ed-canvas-note">Пробел + drag для быстрой панорамы</span>
+            </div>
+
+            <svg id="ed-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">
+              <defs>
+                <pattern id="ed-grid-pat" width="20" height="20" patternUnits="userSpaceOnUse">
+                  <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#d7dfeb" stroke-width=".8"/>
+                </pattern>
+              </defs>
+              <g id="ed-layer-bg"></g>
+              <rect id="ed-grid-rect" width="100%" height="100%" fill="url(#ed-grid-pat)" style="display:none;pointer-events:none"/>
+              <g id="ed-layer-import-preview"></g>
+              <g id="ed-layer-boundary"></g>
+              <g id="ed-layer-wall"></g>
+              <g id="ed-layer-partition"></g>
+              <g id="ed-layer-door"></g>
+              <g id="ed-layer-desk"></g>
+              <g id="ed-layer-draw"></g>
+              <g id="ed-layer-sel"></g>
+            </svg>
+
+            <!-- Minimap -->
+            <div id="ed-minimap">
+              <svg id="ed-minimap-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+              <div id="ed-minimap-vp"></div>
+            </div>
+
+            <!-- Status bar -->
+            <div id="ed-statusbar">
+              <span id="ed-status-mode">Режим: Выбор</span>
+              <span id="ed-status-hint"></span>
+              <span id="ed-status-coords">—</span>
+              <span id="ed-status-precision"></span>
+              <span id="ed-status-zoom">100%</span>
+              <button class="ed-zoom-btn" id="ed-zoom-out">−</button>
+              <button class="ed-zoom-btn" id="ed-zoom-in">+</button>
+              <button class="ed-zoom-btn ed-btn-ghost" id="ed-zoom-reset" title="Сброс вида">FIT</button>
+            </div>
+
+            <button class="ed-edge-toggle ed-edge-toggle-left ed-hidden" id="ed-left-expand" type="button" title="Показать инвентарь" aria-expanded="false">▶</button>
+            <button class="ed-edge-toggle ed-edge-toggle-right ed-hidden" id="ed-right-expand" type="button" title="Показать свойства" aria-expanded="false">◀</button>
+          </div>
+
+          <!-- Right: properties -->
+          <div id="ed-right">
+            <div id="ed-right-header">
+              <div>
+                <span>Свойства</span>
+                <p class="ed-panel-subtitle">Параметры выбранного объекта</p>
+              </div>
+              <button class="ed-toggle-btn" id="ed-right-collapse">▶</button>
+            </div>
+            <div id="ed-props-body">
+              <p id="ed-props-empty">Выберите объект на плане или в списке слева.</p>
+
+              <!-- Desk props -->
+              <div id="ed-props-desk" class="ed-hidden">
+                <div id="ep-single-desk-fields">
+                  <div class="ed-field">
+                    <label>Метка</label>
+                    <input type="text" id="ep-label" maxlength="40">
+                  </div>
+                  <div class="ed-field">
+                    <label>Имя / описание</label>
+                    <input type="text" id="ep-name" maxlength="120" placeholder="Необязательно">
+                  </div>
+                  <div class="ed-field">
+                    <label>Команда</label>
+                    <input type="text" id="ep-team" maxlength="120">
+                  </div>
+                  <div class="ed-field">
+                    <label>Отдел</label>
+                    <input type="text" id="ep-dept" maxlength="120">
+                  </div>
+                  <div class="ed-prop-section">Тип</div>
+                  <div class="ed-checkbox-row">
+                    <input type="checkbox" id="ep-bookable" checked>
+                    <label for="ep-bookable">Доступен для бронирования</label>
+                  </div>
+                  <div class="ed-checkbox-row">
+                    <input type="checkbox" id="ep-fixed">
+                    <label for="ep-fixed">Постоянно закреплён</label>
+                  </div>
+                  <div class="ed-checkbox-row">
+                    <input type="checkbox" id="ep-locked">
+                    <label for="ep-locked">Закрепить объект (без перемещения и удаления)</label>
+                  </div>
+                  <div class="ed-field">
+                    <label>Закреплён за (имя / логин)</label>
+                    <input type="text" id="ep-assigned" maxlength="120" placeholder="Только для fixed">
+                  </div>
+                  <div class="ed-field">
+                    <label>Статус</label>
+                    <select id="ep-status">
+                      <option value="available">Свободен</option>
+                      <option value="occupied">Занят</option>
+                      <option value="disabled">Отключён</option>
+                    </select>
+                  </div>
+                  <div class="ed-prop-section">Геометрия</div>
+                  <div class="ed-row2">
+                    <div class="ed-field"><label>X</label><input type="number" id="ep-x" step="1"></div>
+                    <div class="ed-field"><label>Y</label><input type="number" id="ep-y" step="1"></div>
+                  </div>
+                  <div class="ed-row3">
+                    <div class="ed-field"><label>W</label><input type="number" id="ep-w" step="1" min="1"></div>
+                    <div class="ed-field"><label>H</label><input type="number" id="ep-h" step="1" min="1"></div>
+                    <div class="ed-field"><label>°</label><input type="number" id="ep-r" step="5" min="-180" max="180"></div>
+                  </div>
+                  <div class="ed-inline-btn-row">
+                    <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ep-rot-left" type="button">⟲ -15°</button>
+                    <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ep-rot-right" type="button">+15° ⟳</button>
+                    <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ep-rot-reset" type="button">0°</button>
+                  </div>
+                  <button class="ed-btn ed-btn-danger" id="ep-desk-del" style="width:100%;margin-top:6px">Удалить стол</button>
+                </div>
+
+                <div id="ep-multi-desk-panel" class="ed-hidden">
+                  <div class="ed-prop-section">Мультивыбор мест</div>
+                  <p class="ed-multi-note" id="ep-multi-desk-count">Выбрано мест: 0</p>
+                  <div class="ed-row2">
+                    <div class="ed-field">
+                      <label>Статус</label>
+                      <select id="ep-batch-status">
+                        <option value="">Не менять</option>
+                        <option value="available">Свободен</option>
+                        <option value="occupied">Занят</option>
+                        <option value="disabled">Отключён</option>
+                      </select>
+                    </div>
+                    <div class="ed-field">
+                      <label>Доступен для брони</label>
+                      <select id="ep-batch-bookable">
+                        <option value="">Не менять</option>
+                        <option value="true">Да</option>
+                        <option value="false">Нет</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="ed-row2">
+                    <div class="ed-field">
+                      <label>Постоянно закреплён</label>
+                      <select id="ep-batch-fixed">
+                        <option value="">Не менять</option>
+                        <option value="true">Да</option>
+                        <option value="false">Нет</option>
+                      </select>
+                    </div>
+                    <div class="ed-field">
+                      <label>Закрепить объект</label>
+                      <select id="ep-batch-locked">
+                        <option value="">Не менять</option>
+                        <option value="true">Да</option>
+                        <option value="false">Нет</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="ed-row3">
+                    <div class="ed-field"><label>W</label><input type="number" id="ep-batch-w" step="1" min="1" placeholder="не менять"></div>
+                    <div class="ed-field"><label>H</label><input type="number" id="ep-batch-h" step="1" min="1" placeholder="не менять"></div>
+                    <div class="ed-field"><label>°</label><input type="number" id="ep-batch-r" step="5" min="-180" max="180" placeholder="не менять"></div>
+                  </div>
+                  <button class="ed-btn ed-btn-primary" id="ep-batch-apply" type="button" style="width:100%">Применить к выбранным местам</button>
                 </div>
               </div>
-              <div style="min-width:240px;flex:1;display:flex;flex-direction:column;gap:10px">
 
-                <!-- Properties panel for selected tile -->
-                <div id="tile-properties" class="tile-props-panel">
-                  <p class="tile-props-empty" id="tile-properties-empty">Выберите плитку на плане</p>
-                  <div id="tile-properties-form" style="display:none">
-                    <div class="field" style="margin:0 0 8px">
-                      <label>Метка</label>
-                      <input id="prop-label" type="text" placeholder="A-1">
-                    </div>
-                    <div class="field" style="margin:0 0 8px">
-                      <label>Тип пространства</label>
-                      <select id="prop-space">
-                        <option value="desk">Стол</option>
-                        <option value="meeting_room">Переговорная</option>
-                        <option value="call_room">Call-room</option>
-                        <option value="open_space">Open Space</option>
-                        <option value="lounge">Лаунж</option>
+              <!-- Structure (wall/boundary/partition) props -->
+              <div id="ed-props-struct" class="ed-hidden">
+                <div class="ed-field">
+                  <label>Тип</label>
+                  <select id="ep-struct-type">
+                    <option value="wall">Стена</option>
+                    <option value="boundary">Граница</option>
+                    <option value="partition">Перегородка</option>
+                    <option value="door">Дверь</option>
+                  </select>
+                </div>
+                <div class="ed-field">
+                  <label>Толщина</label>
+                  <input type="number" id="ep-struct-thick" step="0.5" min="0.5" max="40">
+                </div>
+                <div id="ep-zone-fields" class="ed-zone-only">
+                  <div class="ed-field">
+                    <label>Название зоны</label>
+                    <input type="text" id="ep-struct-label" maxlength="120" placeholder="Например: Open Space A">
+                  </div>
+                  <div class="ed-row2">
+                    <div class="ed-field">
+                      <label>Позиция текста</label>
+                      <select id="ep-struct-label-pos">
+                        <option value="center">По центру</option>
+                        <option value="top">Сверху</option>
+                        <option value="bottom">Снизу</option>
+                        <option value="left">Слева</option>
+                        <option value="right">Справа</option>
                       </select>
                     </div>
-                    <div class="field" style="margin:0 0 8px">
-                      <label>Тип бронирования</label>
-                      <select id="prop-desk-type">
-                        <option value="flex">Гибкое (flex)</option>
-                        <option value="fixed">Закреплённое (fixed)</option>
+                    <div class="ed-field">
+                      <label>Ориентация</label>
+                      <select id="ep-struct-label-orient">
+                        <option value="horizontal">Горизонтально</option>
+                        <option value="vertical">Вертикально</option>
+                        <option value="angle">Под углом</option>
                       </select>
                     </div>
-                    <div style="display:flex;gap:8px;margin-bottom:8px">
-                      <div class="field" style="margin:0;flex:1">
-                        <label>Ширина (W)</label>
-                        <input id="prop-w" type="number" step="0.005" min="0.01" max="0.30">
-                      </div>
-                      <div class="field" style="margin:0;flex:1">
-                        <label>Высота (H)</label>
-                        <input id="prop-h" type="number" step="0.005" min="0.01" max="0.30">
-                      </div>
-                    </div>
-                    <button id="prop-delete-btn" class="btn btn-danger btn-sm" style="width:100%">Удалить плитку</button>
+                  </div>
+                  <div class="ed-field ed-hidden" id="ep-struct-label-angle-field">
+                    <label>Угол текста (°)</label>
+                    <input type="number" id="ep-struct-label-angle" min="-180" max="180" step="1" value="0">
+                  </div>
+                  <div class="ed-field">
+                    <label>Размер шрифта зоны</label>
+                    <input type="number" id="ep-struct-label-size" min="8" max="120" step="1" placeholder="18">
+                  </div>
+                  <div class="ed-field">
+                    <label>Цвет зоны</label>
+                    <input type="color" id="ep-struct-color" value="#1d4ed8">
                   </div>
                 </div>
-
-                <p style="font-size:13px;font-weight:600;margin:0;color:var(--text)">
-                  Столов на этаже: <span id="desk-count">0</span>
-                </p>
-                <div id="desk-list-editor" style="display:flex;flex-direction:column;gap:6px;max-height:300px;overflow-y:auto"></div>
-                <div style="display:flex;gap:8px;flex-wrap:wrap">
-                  <button id="save-map-btn" class="btn btn-primary btn-sm">Сохранить планировку</button>
-                  <button id="clear-map-btn" class="btn btn-secondary btn-sm">Очистить всё</button>
+                <div class="ed-checkbox-row">
+                  <input type="checkbox" id="ep-struct-closed">
+                  <label for="ep-struct-closed">Замкнутый контур</label>
                 </div>
+                <div class="ed-checkbox-row">
+                  <input type="checkbox" id="ep-struct-locked">
+                  <label for="ep-struct-locked">Закрепить объект (без перемещения и удаления)</label>
+                </div>
+                <div class="ed-field">
+                  <label>Точки (<span id="ep-struct-pt-count">0</span>)</label>
+                </div>
+                <button class="ed-btn ed-btn-danger" id="ep-struct-del" style="width:100%;margin-top:6px">Удалить элемент</button>
               </div>
             </div>
           </div>
-          <div id="placement-no-plan" class="empty hidden">У выбранного этажа нет плана. Сначала загрузите PNG или SVG.</div>
+
+        </div><!-- /ed-body -->
+
+        <!-- Import overlay (hidden by default) -->
+        <div id="ed-import-overlay" class="ed-hidden">
+          <div id="ed-import-modal">
+            <div id="ed-import-header">
+              <h3>Импорт плана</h3>
+              <button class="ed-btn ed-btn-ghost ed-btn-icon" id="ed-import-close">✕</button>
+            </div>
+            <div id="ed-import-body">
+              <div id="ed-import-drop" class="ed-drop-zone">
+                <div>Перетащите SVG сюда или <u style="cursor:pointer" id="ed-import-browse">выберите файл</u></div>
+                <div style="font-size:11px;margin-top:6px;color:#334155">Также принимается PNG — используется как фон для трассировки</div>
+                <input id="ed-import-file" type="file" accept=".svg,.png,image/svg+xml,image/png" style="display:none">
+              </div>
+              <div id="ed-import-result" class="ed-hidden">
+                <div class="ed-import-stats" id="ed-import-stats"></div>
+                <div id="ed-import-summary" class="ed-import-summary"></div>
+                <div class="ed-import-note">
+                  <strong>Confidence</strong> — это уверенность авто-классификатора, а не процент отрисовки.
+                  Предпросмотр на карте обновляется сразу при смене типа.
+                </div>
+                <div class="ed-import-note ed-import-note-warning">
+                  Режим по умолчанию: <strong>Авто + review</strong>. Нажмите <strong>«Применить авто»</strong> для confidence ≥ 70%, затем проверьте только спорные элементы.
+                </div>
+                <div class="ed-import-legend">
+                  <span class="ed-import-legend-item"><i class="ed-import-legend-dot ok"></i> ≥70%: надёжно</span>
+                  <span class="ed-import-legend-item"><i class="ed-import-legend-dot warn"></i> 40–69%: проверить</span>
+                  <span class="ed-import-legend-item"><i class="ed-import-legend-dot bad"></i> &lt;40%: сомнительно</span>
+                </div>
+                <div id="ed-import-review-controls" class="ed-import-review-controls ed-hidden">
+                  <div class="ed-import-filters">
+                    <select id="ed-import-filter-conf">
+                      <option value="all" selected>Confidence: все</option>
+                      <option value="lt40">Confidence: &lt;40%</option>
+                      <option value="40to69">Confidence: 40–69%</option>
+                      <option value="gte70">Confidence: ≥70%</option>
+                    </select>
+                    <select id="ed-import-filter-type">
+                      <option value="all">Тип: все</option>
+                      <option value="wall">Стена</option>
+                      <option value="boundary">Граница</option>
+                      <option value="partition">Перегородка</option>
+                      <option value="door">Дверь</option>
+                      <option value="skip">Пропуск</option>
+                    </select>
+                    <select id="ed-import-filter-geom">
+                      <option value="all">Геометрия: все</option>
+                      <option value="open">Открытые</option>
+                      <option value="closed">Замкнутые</option>
+                    </select>
+                  </div>
+                  <div class="ed-import-bulk">
+                    <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ed-import-select-visible">Выделить видимые</button>
+                    <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ed-import-clear-selection">Сбросить</button>
+                    <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ed-import-bulk-wall">В стены</button>
+                    <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ed-import-bulk-boundary">В границы</button>
+                    <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ed-import-bulk-partition">В перегородки</button>
+                    <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ed-import-bulk-door">В двери</button>
+                    <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ed-import-bulk-skip">Пропустить</button>
+                  </div>
+                </div>
+                <div id="ed-import-items" class="ed-import-items"></div>
+              </div>
+            </div>
+            <div id="ed-import-footer">
+              <button class="ed-btn ed-btn-ghost" id="ed-import-cancel">Отмена</button>
+              <button class="ed-btn ed-btn-ghost ed-hidden" id="ed-import-review">Проверить спорные</button>
+              <button class="ed-btn ed-btn-primary ed-hidden" id="ed-import-apply-auto">Применить авто</button>
+              <button class="ed-btn ed-btn-primary ed-hidden" id="ed-import-apply-review">Применить спорные к черновику</button>
+            </div>
+          </div>
         </div>
-      </div>
+
+        <!-- History overlay -->
+        <div id="ed-history-overlay" class="ed-hidden">
+          <div id="ed-history-modal">
+            <div id="ed-history-header">
+              <h3>История версий</h3>
+              <button class="ed-btn ed-btn-ghost ed-btn-icon" id="ed-history-close">✕</button>
+            </div>
+            <div id="ed-history-body">
+              <p class="ed-history-note">Выберите ревизию, чтобы восстановить ее в текущий черновик.</p>
+              <div id="ed-history-list"></div>
+            </div>
+            <div id="ed-history-footer">
+              <button class="ed-btn ed-btn-ghost" id="ed-history-cancel">Закрыть</button>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /tab-editor -->
 
       <!-- Policies tab -->
       <div id="tab-policies" class="tab-content hidden">
@@ -281,6 +675,7 @@
                   <th>Дни вперёд</th>
                   <th>Длительность (мин)</th>
                   <th>No-show (мин)</th>
+                  <th>Макс/день</th>
                   <th>Действия</th>
                 </tr>
               </thead>
@@ -321,6 +716,10 @@
             <div class="field">
               <label for="policy-noshow">No-show таймаут (мин)</label>
               <input id="policy-noshow" type="number" value="15" min="0">
+            </div>
+            <div class="field">
+              <label for="policy-max-per-day">Макс. броней в день</label>
+              <input id="policy-max-per-day" type="number" value="1" min="1" max="10">
             </div>
           </div>
           <button id="create-policy-btn" class="btn btn-primary" style="margin-top:16px">Добавить политику</button>
@@ -499,6 +898,7 @@
   <!-- Fixed toast container -->
   <div id="admin-toast" class="admin-toast-container"></div>
 
+  <script src="./editor.js"></script>
   <script src="./admin.js"></script>
   <script>if (window.lucide) lucide.createIcons();</script>
 </body>
