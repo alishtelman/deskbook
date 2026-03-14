@@ -160,6 +160,28 @@ class AvailabilityResponse(BaseModel):
     reason: Optional[str] = None
 
 
+class AvailabilityBatchRequest(BaseModel):
+    desk_ids: list[PositiveInt] = Field(..., min_length=1, max_length=2000)
+    reservation_date: date
+    start_time: time
+    end_time: time
+    user_id: Optional[str] = Field(None, min_length=1, max_length=120)
+
+    def model_post_init(self, __context: object) -> None:
+        if self.user_id is not None:
+            self.user_id = _strip(self.user_id) or None
+
+
+class AvailabilityBatchItem(BaseModel):
+    desk_id: PositiveInt
+    available: bool
+    reason: Optional[str] = None
+
+
+class AvailabilityBatchResponse(BaseModel):
+    items: list[AvailabilityBatchItem]
+
+
 # ---------------------------------------------------------------------------
 # Batch reservations
 # ---------------------------------------------------------------------------
@@ -412,7 +434,10 @@ class StructureElement(BaseModel):
     closed: bool = False
     label: Optional[str] = None
     label_size: Optional[float] = Field(None, gt=0, le=120)
+    label_pos: Optional[str] = Field(None, pattern="^(center|top|bottom|left|right)$")
+    label_angle: Optional[float] = Field(None, ge=-180, le=180)
     color: Optional[str] = Field(None, pattern="^#[0-9a-fA-F]{3,6}$")
+    locked: bool = False
     conf: float = Field(1.0, ge=0.0, le=1.0)  # import confidence 0–1
 
 
@@ -431,6 +456,7 @@ class LayoutDesk(BaseModel):
     w: float
     h: float
     r: float = 0.0   # rotation degrees
+    locked: bool = False
 
 
 class LayoutBackgroundTransform(BaseModel):

@@ -367,54 +367,113 @@
 
               <!-- Desk props -->
               <div id="ed-props-desk" class="ed-hidden">
-                <div class="ed-field">
-                  <label>Метка</label>
-                  <input type="text" id="ep-label" maxlength="40">
+                <div id="ep-single-desk-fields">
+                  <div class="ed-field">
+                    <label>Метка</label>
+                    <input type="text" id="ep-label" maxlength="40">
+                  </div>
+                  <div class="ed-field">
+                    <label>Имя / описание</label>
+                    <input type="text" id="ep-name" maxlength="120" placeholder="Необязательно">
+                  </div>
+                  <div class="ed-field">
+                    <label>Команда</label>
+                    <input type="text" id="ep-team" maxlength="120">
+                  </div>
+                  <div class="ed-field">
+                    <label>Отдел</label>
+                    <input type="text" id="ep-dept" maxlength="120">
+                  </div>
+                  <div class="ed-prop-section">Тип</div>
+                  <div class="ed-checkbox-row">
+                    <input type="checkbox" id="ep-bookable" checked>
+                    <label for="ep-bookable">Доступен для бронирования</label>
+                  </div>
+                  <div class="ed-checkbox-row">
+                    <input type="checkbox" id="ep-fixed">
+                    <label for="ep-fixed">Постоянно закреплён</label>
+                  </div>
+                  <div class="ed-checkbox-row">
+                    <input type="checkbox" id="ep-locked">
+                    <label for="ep-locked">Закрепить объект (без перемещения и удаления)</label>
+                  </div>
+                  <div class="ed-field">
+                    <label>Закреплён за (имя / логин)</label>
+                    <input type="text" id="ep-assigned" maxlength="120" placeholder="Только для fixed">
+                  </div>
+                  <div class="ed-field">
+                    <label>Статус</label>
+                    <select id="ep-status">
+                      <option value="available">Свободен</option>
+                      <option value="occupied">Занят</option>
+                      <option value="disabled">Отключён</option>
+                    </select>
+                  </div>
+                  <div class="ed-prop-section">Геометрия</div>
+                  <div class="ed-row2">
+                    <div class="ed-field"><label>X</label><input type="number" id="ep-x" step="1"></div>
+                    <div class="ed-field"><label>Y</label><input type="number" id="ep-y" step="1"></div>
+                  </div>
+                  <div class="ed-row3">
+                    <div class="ed-field"><label>W</label><input type="number" id="ep-w" step="1" min="1"></div>
+                    <div class="ed-field"><label>H</label><input type="number" id="ep-h" step="1" min="1"></div>
+                    <div class="ed-field"><label>°</label><input type="number" id="ep-r" step="5" min="-180" max="180"></div>
+                  </div>
+                  <div class="ed-inline-btn-row">
+                    <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ep-rot-left" type="button">⟲ -15°</button>
+                    <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ep-rot-right" type="button">+15° ⟳</button>
+                    <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ep-rot-reset" type="button">0°</button>
+                  </div>
+                  <button class="ed-btn ed-btn-danger" id="ep-desk-del" style="width:100%;margin-top:6px">Удалить стол</button>
                 </div>
-                <div class="ed-field">
-                  <label>Имя / описание</label>
-                  <input type="text" id="ep-name" maxlength="120" placeholder="Необязательно">
+
+                <div id="ep-multi-desk-panel" class="ed-hidden">
+                  <div class="ed-prop-section">Мультивыбор мест</div>
+                  <p class="ed-multi-note" id="ep-multi-desk-count">Выбрано мест: 0</p>
+                  <div class="ed-row2">
+                    <div class="ed-field">
+                      <label>Статус</label>
+                      <select id="ep-batch-status">
+                        <option value="">Не менять</option>
+                        <option value="available">Свободен</option>
+                        <option value="occupied">Занят</option>
+                        <option value="disabled">Отключён</option>
+                      </select>
+                    </div>
+                    <div class="ed-field">
+                      <label>Доступен для брони</label>
+                      <select id="ep-batch-bookable">
+                        <option value="">Не менять</option>
+                        <option value="true">Да</option>
+                        <option value="false">Нет</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="ed-row2">
+                    <div class="ed-field">
+                      <label>Постоянно закреплён</label>
+                      <select id="ep-batch-fixed">
+                        <option value="">Не менять</option>
+                        <option value="true">Да</option>
+                        <option value="false">Нет</option>
+                      </select>
+                    </div>
+                    <div class="ed-field">
+                      <label>Закрепить объект</label>
+                      <select id="ep-batch-locked">
+                        <option value="">Не менять</option>
+                        <option value="true">Да</option>
+                        <option value="false">Нет</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="ed-row3">
+                    <div class="ed-field"><label>W</label><input type="number" id="ep-batch-w" step="1" min="1" placeholder="не менять"></div>
+                    <div class="ed-field"><label>H</label><input type="number" id="ep-batch-h" step="1" min="1" placeholder="не менять"></div>
+                    <div class="ed-field"><label>°</label><input type="number" id="ep-batch-r" step="5" min="-180" max="180" placeholder="не менять"></div>
+                  </div>
+                  <button class="ed-btn ed-btn-primary" id="ep-batch-apply" type="button" style="width:100%">Применить к выбранным местам</button>
                 </div>
-                <div class="ed-field">
-                  <label>Команда</label>
-                  <input type="text" id="ep-team" maxlength="120">
-                </div>
-                <div class="ed-field">
-                  <label>Отдел</label>
-                  <input type="text" id="ep-dept" maxlength="120">
-                </div>
-                <div class="ed-prop-section">Тип</div>
-                <div class="ed-checkbox-row">
-                  <input type="checkbox" id="ep-bookable" checked>
-                  <label for="ep-bookable">Доступен для бронирования</label>
-                </div>
-                <div class="ed-checkbox-row">
-                  <input type="checkbox" id="ep-fixed">
-                  <label for="ep-fixed">Постоянно закреплён</label>
-                </div>
-                <div class="ed-field">
-                  <label>Закреплён за (имя / логин)</label>
-                  <input type="text" id="ep-assigned" maxlength="120" placeholder="Только для fixed">
-                </div>
-                <div class="ed-field">
-                  <label>Статус</label>
-                  <select id="ep-status">
-                    <option value="available">Свободен</option>
-                    <option value="occupied">Занят</option>
-                    <option value="disabled">Отключён</option>
-                  </select>
-                </div>
-                <div class="ed-prop-section">Геометрия</div>
-                <div class="ed-row2">
-                  <div class="ed-field"><label>X</label><input type="number" id="ep-x" step="1"></div>
-                  <div class="ed-field"><label>Y</label><input type="number" id="ep-y" step="1"></div>
-                </div>
-                <div class="ed-row3">
-                  <div class="ed-field"><label>W</label><input type="number" id="ep-w" step="1" min="1"></div>
-                  <div class="ed-field"><label>H</label><input type="number" id="ep-h" step="1" min="1"></div>
-                  <div class="ed-field"><label>°</label><input type="number" id="ep-r" step="5" min="-180" max="180"></div>
-                </div>
-                <button class="ed-btn ed-btn-danger" id="ep-desk-del" style="width:100%;margin-top:6px">Удалить стол</button>
               </div>
 
               <!-- Structure (wall/boundary/partition) props -->
@@ -437,6 +496,30 @@
                     <label>Название зоны</label>
                     <input type="text" id="ep-struct-label" maxlength="120" placeholder="Например: Open Space A">
                   </div>
+                  <div class="ed-row2">
+                    <div class="ed-field">
+                      <label>Позиция текста</label>
+                      <select id="ep-struct-label-pos">
+                        <option value="center">По центру</option>
+                        <option value="top">Сверху</option>
+                        <option value="bottom">Снизу</option>
+                        <option value="left">Слева</option>
+                        <option value="right">Справа</option>
+                      </select>
+                    </div>
+                    <div class="ed-field">
+                      <label>Ориентация</label>
+                      <select id="ep-struct-label-orient">
+                        <option value="horizontal">Горизонтально</option>
+                        <option value="vertical">Вертикально</option>
+                        <option value="angle">Под углом</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="ed-field ed-hidden" id="ep-struct-label-angle-field">
+                    <label>Угол текста (°)</label>
+                    <input type="number" id="ep-struct-label-angle" min="-180" max="180" step="1" value="0">
+                  </div>
                   <div class="ed-field">
                     <label>Размер шрифта зоны</label>
                     <input type="number" id="ep-struct-label-size" min="8" max="120" step="1" placeholder="18">
@@ -449,6 +532,10 @@
                 <div class="ed-checkbox-row">
                   <input type="checkbox" id="ep-struct-closed">
                   <label for="ep-struct-closed">Замкнутый контур</label>
+                </div>
+                <div class="ed-checkbox-row">
+                  <input type="checkbox" id="ep-struct-locked">
+                  <label for="ep-struct-locked">Закрепить объект (без перемещения и удаления)</label>
                 </div>
                 <div class="ed-field">
                   <label>Точки (<span id="ep-struct-pt-count">0</span>)</label>

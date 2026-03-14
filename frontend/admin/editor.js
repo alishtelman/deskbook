@@ -23,6 +23,7 @@ const PX_CLOSE_THRESHOLD = 14;
 const MARQUEE_MIN_PX = 4;
 const OBJECT_HIT_PX = 14;
 const DEFAULT_ZONE_LABEL_SIZE = 18;
+const DRAW_ANGLE_STEP_DEG = 45;
 const PANEL_LEFT_KEY = 'editor_left_collapsed';
 const PANEL_RIGHT_KEY = 'editor_right_collapsed';
 
@@ -34,14 +35,15 @@ const DESK_COLORS = {
 };
 
 const MODE_HINTS = {
-  select:    'Клик — выбор; Shift+клик/рамка — мультивыбор (места/стены); тащи — перемещение; Пробел+тащи — рука',
+  select:    'Клик — выбор; Shift+клик/рамка — мультивыбор объектов; тащи — перемещение; круглая ручка — поворот; Q/E — шаг поворота; Пробел+тащи — рука',
   pan:       'Тащи для панорамирования; колесо — зум',
-  wall:      'Клик — добавить точку; Enter/двойной клик — завершить; Esc — отменить',
-  boundary:  'Клик — точка; клик рядом с первой — замкнуть; Enter — замкнуть; Esc — отменить',
-  partition: 'Клик — точка; Enter — завершить; Esc — отменить',
-  door:      'Клик — точка; Enter/двойной клик — завершить; Esc — отменить',
+  wall:      'Клик — добавить точку; Shift — угол 45°; Enter/двойной клик — завершить; Esc — отменить',
+  boundary:  'Клик — точка; Shift — угол 45°; клик рядом с первой — замкнуть; Enter — замкнуть; Esc — отменить',
+  partition: 'Клик — точка; Shift — угол 45°; Enter — завершить; Esc — отменить',
+  door:      'Клик — точка; Shift — угол 45°; Enter/двойной клик — завершить; Esc — отменить',
   desk:      'Клик — поставить стол; для блока выберите "Блок" в панели ниже',
 };
+const STRUCT_TYPES = ['wall', 'boundary', 'partition', 'door'];
 
 /* ── State ──────────────────────────────────────────────────────────────────── */
 let ld = null;        // LayoutDocument (canonical)
@@ -73,6 +75,7 @@ function resetEd() {
     gridSize: 10,
     altSnapOff: false,
     shiftFine: false,
+    shiftDown: false,
     deskTool: {
       placeMode: 'single', // single | block
       pattern: 'rows',     // rows | double
@@ -92,10 +95,9 @@ function resetEd() {
     selType: null,   // 'desk' | 'wall' | 'boundary' | 'partition' | 'door'
     selId:   null,
     multiDeskIds: [],
-    multiWallIds: [],
+    multiStructKeys: [],
     marquee: null,   // { pointerId, start:{x,y}, current:{x,y}, append:boolean }
-    dragGroup: null, // { pointerId, startPt:{x,y}, items:[{desk,x,y}] }
-    dragWallGroup: null, // { pointerId, startPt:{x,y}, items:[{wall,pts}] }
+    dragGroup: null, // { pointerId, startPt:{x,y}, desks:[...], structs:[...], moved }
 
     // Pan
     panning:  false,
@@ -113,6 +115,17 @@ function uid() {
   return (typeof crypto !== 'undefined' && crypto.randomUUID)
     ? crypto.randomUUID()
     : 'id-' + Math.random().toString(36).slice(2);
+}
+
+function _degToRad(deg) {
+  return Number(deg || 0) * Math.PI / 180;
+}
+
+function normalizeDeskRotation(value) {
+  let ang = Number(value);
+  if (!Number.isFinite(ang)) return 0;
+  ang = ((ang + 180) % 360 + 360) % 360 - 180;
+  return Math.abs(ang) < 1e-6 ? 0 : ang;
 }
 
 /* ── Auth header ────────────────────────────────────────────────────────────── */
@@ -160,6 +173,52 @@ function snapV(v) {
   return Math.round(v / step) * step;
 }
 
+function isDrawMode(mode = ed.mode) {
+  return ['wall', 'boundary', 'partition', 'door'].includes(mode);
+}
+
+function _toXYPoint(pt) {
+  if (!pt) return null;
+  const x = Number(Array.isArray(pt) ? pt[0] : pt.x);
+  const y = Number(Array.isArray(pt) ? pt[1] : pt.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+}
+
+function getConstrainedDrawPoint(basePt, pointerPt, opts = {}) {
+  const ptr = _toXYPoint(pointerPt);
+  if (!ptr) return [0, 0];
+
+  const angleLock = !!opts.angleLock;
+  if (!angleLock) return [snapV(ptr.x), snapV(ptr.y)];
+
+  const base = _toXYPoint(basePt);
+  if (!base) return [snapV(ptr.x), snapV(ptr.y)];
+
+  const dx = ptr.x - base.x;
+  const dy = ptr.y - base.y;
+  const len = Math.hypot(dx, dy);
+  if (len <= 1e-9) return [base.x, base.y];
+
+  const stepDeg = Number.isFinite(Number(opts.angleStepDeg))
+    ? Number(opts.angleStepDeg)
+    : DRAW_ANGLE_STEP_DEG;
+  const stepRad = Math.max(1, stepDeg) * Math.PI / 180;
+  const rawAngle = Math.atan2(dy, dx);
+  const lockedAngle = Math.round(rawAngle / stepRad) * stepRad;
+
+  let dist = len;
+  if (!ed.altSnapOff && ed.snapGrid) {
+    const gridStep = Math.max(0.1, Number(ed.gridSize || 10));
+    dist = Math.round(len / gridStep) * gridStep;
+  }
+
+  return [
+    base.x + Math.cos(lockedAngle) * dist,
+    base.y + Math.sin(lockedAngle) * dist,
+  ];
+}
+
 function worldUnitsForScreenPx(px) {
   const svg = _svg();
   if (!svg || !Number.isFinite(px) || px <= 0) return 0;
@@ -173,6 +232,24 @@ function worldUnitsForScreenPx(px) {
   const rect = svg.getBoundingClientRect();
   if (!rect.width) return px;
   return px * (ed.vb.w / rect.width);
+}
+
+function layoutStrokeScale(vbWidth) {
+  const w = Number(vbWidth);
+  if (!Number.isFinite(w) || w <= 0) return 1;
+  return Math.max(0.2, Math.min(8, w * 0.001));
+}
+
+function layoutStrokeWidth(kind, thick, vbWidth) {
+  const base = Number.isFinite(Number(thick)) ? Number(thick) : (
+    kind === 'wall' ? 4 :
+    kind === 'partition' ? 3 :
+    kind === 'door' ? 2.2 :
+    2
+  );
+  const scale = layoutStrokeScale(vbWidth);
+  if (kind === 'boundary') return Math.max(1, base * scale * 0.4);
+  return Math.max(1, base * scale);
 }
 
 function clampInt(v, min, max, fallback) {
@@ -224,7 +301,7 @@ function makeDeskRecord(rect, label) {
   return {
     id: uid(), label, name: null, team: null, dept: null,
     bookable: true, fixed: false, assigned_to: null, status: 'available',
-    x: rect.x, y: rect.y, w: rect.w, h: rect.h, r: 0,
+    x: rect.x, y: rect.y, w: rect.w, h: rect.h, r: 0, locked: false,
   };
 }
 
@@ -371,6 +448,11 @@ function ensureLayoutArrays(doc) {
   if (!Array.isArray(doc.partitions)) doc.partitions = [];
   if (!Array.isArray(doc.doors)) doc.doors = [];
   if (!Array.isArray(doc.desks)) doc.desks = [];
+  doc.walls = doc.walls.map(el => ({ ...el, locked: !!el?.locked }));
+  doc.boundaries = doc.boundaries.map(el => ({ ...el, locked: !!el?.locked }));
+  doc.partitions = doc.partitions.map(el => ({ ...el, locked: !!el?.locked }));
+  doc.doors = doc.doors.map(el => ({ ...el, locked: !!el?.locked }));
+  doc.desks = doc.desks.map(d => ({ ...d, locked: !!d?.locked }));
   return doc;
 }
 
@@ -461,6 +543,65 @@ function zoneLabelSize(el) {
   const n = Number(el?.label_size);
   if (Number.isFinite(n) && n > 0) return Math.max(8, Math.min(120, n));
   return defaultZoneLabelSize();
+}
+
+function normalizeLabelPos(value) {
+  const v = String(value || '').trim().toLowerCase();
+  return ['center', 'top', 'bottom', 'left', 'right'].includes(v) ? v : 'center';
+}
+
+function labelOrientationFromAngle(value) {
+  const a = normalizeDeskRotation(value);
+  if (Math.abs(a) <= 0.5) return 'horizontal';
+  if (Math.abs(Math.abs(a) - 90) <= 0.5) return 'vertical';
+  return 'angle';
+}
+
+function labelAngleFromInputs(orientation, angleValue) {
+  const orient = String(orientation || '').trim().toLowerCase();
+  if (orient === 'vertical') return -90;
+  if (orient === 'horizontal') return 0;
+  return normalizeDeskRotation(angleValue);
+}
+
+function pointsBounds(pts) {
+  if (!Array.isArray(pts) || pts.length === 0) return null;
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const p of pts) {
+    const x = Number(p?.[0]);
+    const y = Number(p?.[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+  if (![minX, minY, maxX, maxY].every(Number.isFinite)) return null;
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    w: Math.max(1, maxX - minX),
+    h: Math.max(1, maxY - minY),
+    cx: (minX + maxX) / 2,
+    cy: (minY + maxY) / 2,
+  };
+}
+
+function zoneLabelAnchorPoint(el, fontSize) {
+  const bounds = pointsBounds(el?.pts);
+  if (!bounds) return centroidOfPoints(el?.pts || []);
+  const pos = normalizeLabelPos(el?.label_pos);
+  const margin = Math.max(4, fontSize * 0.65, Math.min(bounds.w, bounds.h) * 0.08);
+  if (pos === 'top') return { x: bounds.cx, y: bounds.minY + margin };
+  if (pos === 'bottom') return { x: bounds.cx, y: bounds.maxY - margin };
+  if (pos === 'left') return { x: bounds.minX + margin, y: bounds.cy };
+  if (pos === 'right') return { x: bounds.maxX - margin, y: bounds.cy };
+  return { x: bounds.cx, y: bounds.cy };
 }
 
 function getCanvasRect() {
@@ -568,15 +709,34 @@ function clearSelectionState(opts = {}) {
   ed.selType = null;
   ed.selId = null;
   if (!opts.keepMulti && !opts.keepDeskMulti) ed.multiDeskIds = [];
-  if (!opts.keepMulti && !opts.keepWallMulti) ed.multiWallIds = [];
+  if (!opts.keepMulti && !opts.keepStructMulti) ed.multiStructKeys = [];
 }
 
 function hasMultiDeskSelection() {
   return Array.isArray(ed.multiDeskIds) && ed.multiDeskIds.length > 0;
 }
 
-function hasMultiWallSelection() {
-  return Array.isArray(ed.multiWallIds) && ed.multiWallIds.length > 0;
+function hasMultiStructSelection() {
+  return Array.isArray(ed.multiStructKeys) && ed.multiStructKeys.length > 0;
+}
+
+function isStructType(type) {
+  return STRUCT_TYPES.includes(type);
+}
+
+function structSelKey(type, id) {
+  if (!isStructType(type) || !id) return null;
+  return `${type}:${id}`;
+}
+
+function parseStructSelKey(key) {
+  const raw = String(key || '');
+  const sep = raw.indexOf(':');
+  if (sep <= 0) return null;
+  const type = raw.slice(0, sep);
+  const id = raw.slice(sep + 1);
+  if (!isStructType(type) || !id) return null;
+  return { type, id };
 }
 
 function isDeskSelected(deskId) {
@@ -585,40 +745,102 @@ function isDeskSelected(deskId) {
   return (ed.multiDeskIds || []).includes(deskId);
 }
 
-function isWallSelected(wallId) {
-  if (!wallId) return false;
-  if (ed.selType === 'wall' && ed.selId === wallId) return true;
-  return (ed.multiWallIds || []).includes(wallId);
+function isStructSelected(type, id) {
+  if (!isStructType(type) || !id) return false;
+  if (ed.selType === type && ed.selId === id) return true;
+  const key = structSelKey(type, id);
+  return key ? (ed.multiStructKeys || []).includes(key) : false;
 }
 
-function setMultiDeskSelection(ids, append = false) {
-  const current = append ? new Set(ed.multiDeskIds || []) : new Set();
-  for (const id of (ids || [])) {
-    if (id) current.add(id);
+function setCombinedMultiSelection(deskIds, structKeys, append = false) {
+  const deskSet = append ? new Set(ed.multiDeskIds || []) : new Set();
+  for (const id of (deskIds || [])) {
+    if (id) deskSet.add(id);
   }
-  ed.multiDeskIds = Array.from(current);
-  ed.multiWallIds = [];
+  const structSet = append ? new Set(ed.multiStructKeys || []) : new Set();
+  for (const raw of (structKeys || [])) {
+    const parsed = parseStructSelKey(raw);
+    if (!parsed) continue;
+    structSet.add(structSelKey(parsed.type, parsed.id));
+  }
+  ed.multiDeskIds = Array.from(deskSet);
+  ed.multiStructKeys = Array.from(structSet);
   ed.selType = null;
   ed.selId = null;
+  renderStructure();
   renderDesks();
   renderSelection();
   renderObjectList();
   showPropsFor(null, null);
 }
 
-function setMultiWallSelection(ids, append = false) {
-  const current = append ? new Set(ed.multiWallIds || []) : new Set();
+function setMultiDeskSelection(ids, append = false, opts = {}) {
+  const { keepStruct = false } = opts;
+  const current = append ? new Set(ed.multiDeskIds || []) : new Set();
   for (const id of (ids || [])) {
     if (id) current.add(id);
   }
-  ed.multiWallIds = Array.from(current);
+  ed.multiDeskIds = Array.from(current);
+  if (!keepStruct) ed.multiStructKeys = [];
   ed.selType = null;
   ed.selId = null;
-  ed.multiDeskIds = [];
   renderStructure();
+  renderDesks();
   renderSelection();
   renderObjectList();
   showPropsFor(null, null);
+}
+
+function setMultiStructSelection(keys, append = false, opts = {}) {
+  const { keepDesk = false } = opts;
+  const current = append ? new Set(ed.multiStructKeys || []) : new Set();
+  for (const raw of (keys || [])) {
+    const parsed = parseStructSelKey(raw);
+    if (!parsed) continue;
+    current.add(structSelKey(parsed.type, parsed.id));
+  }
+  ed.multiStructKeys = Array.from(current);
+  ed.selType = null;
+  ed.selId = null;
+  if (!keepDesk) ed.multiDeskIds = [];
+  renderStructure();
+  renderDesks();
+  renderSelection();
+  renderObjectList();
+  showPropsFor(null, null);
+}
+
+function toggleDeskMultiSelection(deskId, opts = {}) {
+  const { keepStruct = true } = opts;
+  if (!deskId) return;
+  const next = new Set(ed.multiDeskIds || []);
+  if (next.has(deskId)) next.delete(deskId);
+  else next.add(deskId);
+  setMultiDeskSelection(Array.from(next), false, { keepStruct });
+}
+
+function toggleStructMultiSelection(type, id, opts = {}) {
+  const { keepDesk = true } = opts;
+  const key = structSelKey(type, id);
+  if (!key) return;
+  const next = new Set(ed.multiStructKeys || []);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  setMultiStructSelection(Array.from(next), false, { keepDesk });
+}
+
+function getStructByTypeId(type, id) {
+  const arr = structArrayByType(type);
+  if (!Array.isArray(arr)) return null;
+  return arr.find((x) => x.id === id) || null;
+}
+
+function isDeskLocked(desk) {
+  return !!desk?.locked;
+}
+
+function isStructLocked(el) {
+  return !!el?.locked;
 }
 
 function deskSelectionBounds(ids) {
@@ -637,15 +859,18 @@ function deskSelectionBounds(ids) {
   return { x: x1, y: y1, w: Math.max(1, x2 - x1), h: Math.max(1, y2 - y1) };
 }
 
-function wallSelectionBounds(ids) {
-  const selected = (ld?.walls || []).filter(w => ids.includes(w.id));
-  if (!selected.length) return null;
+function structSelectionBounds(keys) {
+  if (!Array.isArray(keys) || !keys.length) return null;
   let x1 = Infinity;
   let y1 = Infinity;
   let x2 = -Infinity;
   let y2 = -Infinity;
-  for (const wall of selected) {
-    for (const p of (wall.pts || [])) {
+  for (const raw of keys) {
+    const parsed = parseStructSelKey(raw);
+    if (!parsed) continue;
+    const el = getStructByTypeId(parsed.type, parsed.id);
+    if (!el || !Array.isArray(el.pts)) continue;
+    for (const p of el.pts) {
       const px = Number(p?.[0] || 0);
       const py = Number(p?.[1] || 0);
       x1 = Math.min(x1, px);
@@ -654,25 +879,29 @@ function wallSelectionBounds(ids) {
       y2 = Math.max(y2, py);
     }
   }
-  if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) return null;
+  if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
+    return null;
+  }
   return { x: x1, y: y1, w: Math.max(1, x2 - x1), h: Math.max(1, y2 - y1) };
 }
 
-function wallIntersectsRect(wall, x1, y1, x2, y2) {
-  let wx1 = Infinity;
-  let wy1 = Infinity;
-  let wx2 = -Infinity;
-  let wy2 = -Infinity;
-  for (const p of (wall?.pts || [])) {
+function structIntersectsRect(el, x1, y1, x2, y2) {
+  let sx1 = Infinity;
+  let sy1 = Infinity;
+  let sx2 = -Infinity;
+  let sy2 = -Infinity;
+  for (const p of (el?.pts || [])) {
     const px = Number(p?.[0] || 0);
     const py = Number(p?.[1] || 0);
-    wx1 = Math.min(wx1, px);
-    wy1 = Math.min(wy1, py);
-    wx2 = Math.max(wx2, px);
-    wy2 = Math.max(wy2, py);
+    sx1 = Math.min(sx1, px);
+    sy1 = Math.min(sy1, py);
+    sx2 = Math.max(sx2, px);
+    sy2 = Math.max(sy2, py);
   }
-  if (!Number.isFinite(wx1) || !Number.isFinite(wy1) || !Number.isFinite(wx2) || !Number.isFinite(wy2)) return false;
-  return !(wx1 > x2 || wx2 < x1 || wy1 > y2 || wy2 < y1);
+  if (!Number.isFinite(sx1) || !Number.isFinite(sy1) || !Number.isFinite(sx2) || !Number.isFinite(sy2)) {
+    return false;
+  }
+  return !(sx1 > x2 || sx2 < x1 || sy1 > y2 || sy2 < y1);
 }
 
 function pointSegmentDistance(px, py, ax, ay, bx, by) {
@@ -961,8 +1190,7 @@ function renderStructure() {
   const layers = { wall: _layer('wall'), boundary: _layer('boundary'), partition: _layer('partition'), door: _layer('door') };
   Object.values(layers).forEach(l => { if (l) l.innerHTML = ''; });
   if (!ld) return;
-
-  const sw = Math.max(0.5, ed.vb.w * 0.001);
+  const strokeScaleVb = Number(ld?.vb?.[2]) || Number(ed.vb.w) || 1000;
 
   function drawElements(arr, type) {
     const layer = layers[type];
@@ -972,7 +1200,8 @@ function renderStructure() {
     for (const el of arr) {
       if (!el.pts || el.pts.length < 2) continue;
       const isPrimarySel = ed.selType === type && ed.selId === el.id;
-      const isSel = type === 'wall' ? isWallSelected(el.id) : isPrimarySel;
+      const isSel = isStructSelected(type, el.id);
+      const isLocked = isStructLocked(el);
       const col = type === 'boundary'
         ? normalizeHexColor(el.color, defaultColor)
         : defaultColor;
@@ -983,16 +1212,20 @@ function renderStructure() {
       const tagName = el.closed ? 'polygon' : 'polyline';
       const shape = _makePolyEl(tagName, el.pts, el.closed);
       const hitShape = _makePolyEl(tagName, el.pts, el.closed);
-      const thick = (el.thick || 4) * (sw / 0.5) * 0.5;
-      const hitStroke = Math.max(worldUnitsForScreenPx(OBJECT_HIT_PX), thick + worldUnitsForScreenPx(6));
+      const strokeW = layoutStrokeWidth(type, el.thick, strokeScaleVb);
+      const hitStroke = Math.max(worldUnitsForScreenPx(OBJECT_HIT_PX), strokeW + worldUnitsForScreenPx(6));
 
       hitShape.setAttribute('fill', el.closed ? 'rgba(0,0,0,0)' : 'none');
       hitShape.setAttribute('stroke', 'rgba(0,0,0,0)');
       hitShape.setAttribute('stroke-width', String(hitStroke));
-      hitShape.setAttribute('stroke-linecap', 'round');
+      hitShape.setAttribute('stroke-linecap', 'butt');
       hitShape.setAttribute('stroke-linejoin', 'round');
       hitShape.setAttribute('pointer-events', el.closed ? 'all' : 'stroke');
-      hitShape.setAttribute('cursor', ed.mode === 'select' ? 'pointer' : 'default');
+      if (ed.mode === 'select') {
+        hitShape.setAttribute('cursor', isLocked ? 'not-allowed' : 'pointer');
+      } else {
+        hitShape.setAttribute('cursor', 'default');
+      }
       hitShape.addEventListener('pointerdown', ev => onStructPointerDown(ev, type, el.id));
       g.appendChild(hitShape);
 
@@ -1000,20 +1233,13 @@ function renderStructure() {
         shape.setAttribute('fill', el.closed === false ? 'none' : col);
         shape.setAttribute('fill-opacity', '0.12');
         shape.setAttribute('stroke', col);
-        shape.setAttribute('stroke-width', String(Math.max(1, thick * 0.4)));
-      } else if (type === 'door') {
-        shape.setAttribute('fill', 'none');
-        shape.setAttribute('stroke', col);
-        shape.setAttribute('stroke-width', String(Math.max(sw * 0.9, thick * 0.85)));
-        shape.setAttribute('stroke-linecap', 'round');
-        shape.setAttribute('stroke-linejoin', 'round');
       } else {
         shape.setAttribute('fill', 'none');
         shape.setAttribute('stroke', col);
-        shape.setAttribute('stroke-width', String(thick));
-        shape.setAttribute('stroke-linecap', 'round');
-        shape.setAttribute('stroke-linejoin', 'round');
       }
+      shape.setAttribute('stroke-width', String(strokeW));
+      shape.setAttribute('stroke-linecap', 'butt');
+      shape.setAttribute('stroke-linejoin', 'round');
 
       if (isSel) {
         shape.setAttribute('stroke', '#3b82f6');
@@ -1024,8 +1250,9 @@ function renderStructure() {
       g.appendChild(shape);
 
       if (type === 'boundary' && el.label) {
-        const c = centroidOfPoints(el.pts);
         const fontSize = zoneLabelSize(el);
+        const c = zoneLabelAnchorPoint(el, fontSize);
+        const angle = normalizeDeskRotation(el.label_angle || 0);
         const txt = document.createElementNS(NS, 'text');
         txt.setAttribute('x', String(c.x));
         txt.setAttribute('y', String(c.y));
@@ -1039,6 +1266,9 @@ function renderStructure() {
         txt.setAttribute('stroke-width', String(Math.max(0.9, fontSize * 0.08)));
         txt.setAttribute('paint-order', 'stroke');
         txt.setAttribute('pointer-events', 'none');
+        if (Math.abs(angle) > 1e-6) {
+          txt.setAttribute('transform', `rotate(${angle} ${c.x} ${c.y})`);
+        }
         txt.textContent = el.label;
         g.appendChild(txt);
       }
@@ -1074,6 +1304,7 @@ function renderDesks() {
 
   for (const desk of ld.desks) {
     const isSel = isDeskSelected(desk.id);
+    const isLocked = isDeskLocked(desk);
     const isFixed    = desk.fixed;
     const isDisabled = desk.status === 'disabled';
     const isOccupied = desk.status === 'occupied';
@@ -1101,7 +1332,11 @@ function renderDesks() {
     rect.setAttribute('stroke', isSel ? '#3b82f6' : stroke);
     rect.setAttribute('stroke-width', String(isSel ? swBase * 2 : swBase));
     if (isSel) rect.setAttribute('stroke-dasharray', '5 2');
-    rect.setAttribute('cursor', ed.mode === 'select' ? 'pointer' : 'crosshair');
+    if (ed.mode === 'select') {
+      rect.setAttribute('cursor', isLocked ? 'not-allowed' : 'pointer');
+    } else {
+      rect.setAttribute('cursor', 'crosshair');
+    }
     g.appendChild(rect);
 
     // Label
@@ -1134,6 +1369,12 @@ function renderSelection() {
   if (ed.selType === 'desk' && ed.selId) {
     const desk = ld.desks.find(d => d.id === ed.selId);
     if (desk) {
+      const cx = desk.x + desk.w / 2;
+      const cy = desk.y + desk.h / 2;
+      const ang = _degToRad(desk.r || 0);
+      const ux = Math.sin(ang);
+      const uy = -Math.cos(ang);
+
       // 8 resize handles
       const handles = [
         [desk.x,             desk.y],
@@ -1147,16 +1388,47 @@ function renderSelection() {
       ];
       const cursors = ['nw-resize','n-resize','ne-resize','e-resize','se-resize','s-resize','sw-resize','w-resize'];
 
-      handles.forEach(([hx, hy], i) => {
-        const circle = document.createElementNS(NS, 'circle');
-        circle.setAttribute('cx', hx); circle.setAttribute('cy', hy);
-        circle.setAttribute('r', String(r));
-        circle.setAttribute('fill', '#fff'); circle.setAttribute('stroke', '#3b82f6');
-        circle.setAttribute('stroke-width', '1.5');
-        circle.setAttribute('cursor', cursors[i]);
-        circle.addEventListener('pointerdown', ev => onResizeHandleDown(ev, desk, i));
-        layer.appendChild(circle);
-      });
+      if (!isDeskLocked(desk)) {
+        handles.forEach(([hx, hy], i) => {
+          const circle = document.createElementNS(NS, 'circle');
+          circle.setAttribute('cx', hx); circle.setAttribute('cy', hy);
+          circle.setAttribute('r', String(r));
+          circle.setAttribute('fill', '#fff'); circle.setAttribute('stroke', '#3b82f6');
+          circle.setAttribute('stroke-width', '1.5');
+          circle.setAttribute('cursor', cursors[i]);
+          circle.setAttribute('pointer-events', 'all');
+          circle.addEventListener('pointerdown', ev => onResizeHandleDown(ev, desk, i));
+          layer.appendChild(circle);
+        });
+
+        const topCx = cx + ux * (desk.h / 2);
+        const topCy = cy + uy * (desk.h / 2);
+        const armLen = Math.max(r * 2.8, ed.vb.w * 0.028);
+        const rotX = topCx + ux * armLen;
+        const rotY = topCy + uy * armLen;
+
+        const arm = document.createElementNS(NS, 'line');
+        arm.setAttribute('x1', String(topCx));
+        arm.setAttribute('y1', String(topCy));
+        arm.setAttribute('x2', String(rotX));
+        arm.setAttribute('y2', String(rotY));
+        arm.setAttribute('stroke', '#3b82f6');
+        arm.setAttribute('stroke-width', String(Math.max(1.2, ed.vb.w * 0.0014)));
+        arm.setAttribute('pointer-events', 'none');
+        layer.appendChild(arm);
+
+        const rotateHandle = document.createElementNS(NS, 'circle');
+        rotateHandle.setAttribute('cx', String(rotX));
+        rotateHandle.setAttribute('cy', String(rotY));
+        rotateHandle.setAttribute('r', String(Math.max(r * 0.9, ed.vb.w * 0.0044)));
+        rotateHandle.setAttribute('fill', '#eff6ff');
+        rotateHandle.setAttribute('stroke', '#1d4ed8');
+        rotateHandle.setAttribute('stroke-width', '1.6');
+        rotateHandle.setAttribute('cursor', 'grab');
+        rotateHandle.setAttribute('pointer-events', 'all');
+        rotateHandle.addEventListener('pointerdown', ev => onRotateHandleDown(ev, desk));
+        layer.appendChild(rotateHandle);
+      }
     }
   }
 
@@ -1174,11 +1446,44 @@ function renderSelection() {
       rect.setAttribute('stroke-dasharray', '8 4');
       rect.setAttribute('pointer-events', 'none');
       layer.appendChild(rect);
+
+      const movableIds = (ed.multiDeskIds || []).filter((id) => {
+        const d = (ld.desks || []).find((x) => x.id === id);
+        return !!d && !isDeskLocked(d);
+      });
+      if (movableIds.length) {
+        const boxCx = box.x + box.w / 2;
+        const topCy = box.y;
+        const armLen = Math.max(r * 2.8, ed.vb.w * 0.03);
+        const rotY = topCy - armLen;
+
+        const arm = document.createElementNS(NS, 'line');
+        arm.setAttribute('x1', String(boxCx));
+        arm.setAttribute('y1', String(topCy));
+        arm.setAttribute('x2', String(boxCx));
+        arm.setAttribute('y2', String(rotY));
+        arm.setAttribute('stroke', '#1d4ed8');
+        arm.setAttribute('stroke-width', String(Math.max(1.2, ed.vb.w * 0.0014)));
+        arm.setAttribute('pointer-events', 'none');
+        layer.appendChild(arm);
+
+        const rotateHandle = document.createElementNS(NS, 'circle');
+        rotateHandle.setAttribute('cx', String(boxCx));
+        rotateHandle.setAttribute('cy', String(rotY));
+        rotateHandle.setAttribute('r', String(Math.max(r * 0.95, ed.vb.w * 0.0046)));
+        rotateHandle.setAttribute('fill', '#eff6ff');
+        rotateHandle.setAttribute('stroke', '#1d4ed8');
+        rotateHandle.setAttribute('stroke-width', '1.7');
+        rotateHandle.setAttribute('cursor', 'grab');
+        rotateHandle.setAttribute('pointer-events', 'all');
+        rotateHandle.addEventListener('pointerdown', (ev) => onMultiDeskRotateHandleDown(ev, movableIds));
+        layer.appendChild(rotateHandle);
+      }
     }
   }
 
-  if (hasMultiWallSelection()) {
-    const box = wallSelectionBounds(ed.multiWallIds);
+  if (hasMultiStructSelection()) {
+    const box = structSelectionBounds(ed.multiStructKeys);
     if (box) {
       const rect = document.createElementNS(NS, 'rect');
       rect.setAttribute('x', String(box.x));
@@ -1251,7 +1556,7 @@ function renderDrawing() {
     pl.setAttribute('stroke', col);
     pl.setAttribute('stroke-width', String(sw));
     pl.setAttribute('stroke-dasharray', '6 3');
-    pl.setAttribute('stroke-linecap', 'round');
+    pl.setAttribute('stroke-linecap', 'butt');
     layer.appendChild(pl);
   }
 
@@ -1359,7 +1664,8 @@ function updateStatusBar() {
   if (precEl) {
     const flags = [];
     if (ed.altSnapOff && ed.snapGrid) flags.push('NO SNAP');
-    if (ed.shiftFine) flags.push('FINE');
+    if (ed.shiftDown && isDrawMode(ed.mode)) flags.push(`ANGLE ${DRAW_ANGLE_STEP_DEG}°`);
+    else if (ed.shiftFine) flags.push('FINE');
     precEl.textContent = flags.join(' · ');
   }
   if (zoomEl && ld) {
@@ -1390,13 +1696,14 @@ function renderObjectList() {
     for (const it of filtered) {
       let active = false;
       if (type === 'desk') active = isDeskSelected(it.id);
-      else if (type === 'wall') active = isWallSelected(it.id);
-      else active = ed.selType === type && ed.selId === it.id;
+      else active = isStructSelected(type, it.id);
       const lbl = it.label || `${title.slice(0,-1)} (${it.pts?.length || '?'} pts)`;
       const color = colorFn(it);
+      const lockBadge = it.locked ? '<span class="ed-obj-lock" title="Закреплён">L</span>' : '';
       html += `<div class="ed-obj-item${active?' active':''}" data-id="${it.id}" data-type="${type}">
         <span class="ed-obj-dot" style="background:${color}"></span>
         <span class="ed-obj-label" title="${lbl}">${lbl}</span>
+        ${lockBadge}
       </div>`;
     }
     return html;
@@ -1413,18 +1720,9 @@ function renderObjectList() {
     item.addEventListener('click', (ev) => {
       const type = item.dataset.type;
       const id = item.dataset.id;
-      if (type === 'wall' && ev.shiftKey) {
-        const next = new Set(ed.multiWallIds || []);
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
-        setMultiWallSelection(Array.from(next), false);
-        return;
-      }
-      if (type === 'desk' && ev.shiftKey) {
-        const next = new Set(ed.multiDeskIds || []);
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
-        setMultiDeskSelection(Array.from(next), false);
+      if (ev.shiftKey) {
+        if (type === 'desk') toggleDeskMultiSelection(id, { keepStruct: true });
+        else if (isStructType(type)) toggleStructMultiSelection(type, id, { keepDesk: true });
         return;
       }
       selectObj(type, id);
@@ -1435,7 +1733,7 @@ function renderObjectList() {
 /* ── Selection ──────────────────────────────────────────────────────────────── */
 function selectObj(type, id) {
   ed.multiDeskIds = [];
-  ed.multiWallIds = [];
+  ed.multiStructKeys = [];
   ed.selType = type;
   ed.selId   = id;
   renderStructure();
@@ -1460,11 +1758,22 @@ function showPropsFor(type, id) {
   const deskP  = $el('ed-props-desk');
   const structP = $el('ed-props-struct');
   const zoneFields = $el('ep-zone-fields');
+  const deskSingle = $el('ep-single-desk-fields');
+  const deskMulti = $el('ep-multi-desk-panel');
+  const deskMultiMode = type === null && hasMultiDeskSelection() && !hasMultiStructSelection();
 
-  if (empty)   empty.classList.toggle('ed-hidden', type !== null);
-  if (deskP)   deskP.classList.toggle('ed-hidden', type !== 'desk');
+  if (empty)   empty.classList.toggle('ed-hidden', type !== null || deskMultiMode);
+  if (deskP)   deskP.classList.toggle('ed-hidden', !(type === 'desk' || deskMultiMode));
   if (structP) structP.classList.toggle('ed-hidden', !['wall','boundary','partition','door'].includes(type));
   if (zoneFields) zoneFields.classList.toggle('ed-hidden', type !== 'boundary');
+  if (deskSingle) deskSingle.classList.toggle('ed-hidden', deskMultiMode);
+  if (deskMulti) deskMulti.classList.toggle('ed-hidden', !deskMultiMode);
+
+  if (deskMultiMode) {
+    syncDeskBatchPanel();
+    toggleStructLabelAngleField();
+    return;
+  }
 
   if (type === 'desk' && id && ld) {
     const d = ld.desks.find(x => x.id === id);
@@ -1475,6 +1784,7 @@ function showPropsFor(type, id) {
     _v('ep-dept',  d.dept || '');
     _vc('ep-bookable', d.bookable !== false);
     _vc('ep-fixed',    !!d.fixed);
+    _vc('ep-locked',   !!d.locked);
     _v('ep-assigned',  d.assigned_to || '');
     _v('ep-status',    d.status || 'available');
     _v('ep-x', Math.round(d.x));
@@ -1497,29 +1807,223 @@ function showPropsFor(type, id) {
     _v('ep-struct-type',   type);
     _v('ep-struct-thick',  el.thick || 4);
     _vc('ep-struct-closed', !!el.closed);
+    _vc('ep-struct-locked', !!el.locked);
     _v('ep-struct-label', type === 'boundary' ? (el.label || '') : '');
     _v('ep-struct-label-size', type === 'boundary' ? Math.round(zoneLabelSize(el)) : '');
     _v('ep-struct-color', normalizeHexColor(el.color, DEFAULT_ZONE_COLOR));
+    if (type === 'boundary') {
+      const labelPos = normalizeLabelPos(el.label_pos);
+      const labelAngle = normalizeDeskRotation(el.label_angle || 0);
+      _v('ep-struct-label-pos', labelPos);
+      _v('ep-struct-label-angle', Math.round(labelAngle));
+      _v('ep-struct-label-orient', labelOrientationFromAngle(labelAngle));
+    }
     const ptCount = $el('ep-struct-pt-count');
     if (ptCount) ptCount.textContent = el.pts?.length || 0;
   }
+  toggleStructLabelAngleField();
 }
 
 function _v(id, val) { const el = $el(id); if (el) el.value = val; }
 function _vc(id, checked) { const el = $el(id); if (el) el.checked = checked; }
 
+function _numOrNull(id) {
+  const raw = String($el(id)?.value ?? '').trim();
+  if (raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseBatchBool(id) {
+  const raw = String($el(id)?.value ?? '').trim().toLowerCase();
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  return null;
+}
+
+function selectedDeskIds(opts = {}) {
+  const { includePrimary = true } = opts;
+  const set = new Set(ed.multiDeskIds || []);
+  if (includePrimary && ed.selType === 'desk' && ed.selId) set.add(ed.selId);
+  return Array.from(set);
+}
+
+function selectedDeskRecords(opts = {}) {
+  const { includePrimary = true, skipLocked = false } = opts;
+  const ids = new Set(selectedDeskIds({ includePrimary }));
+  let desks = (ld?.desks || []).filter((d) => ids.has(d.id));
+  if (skipLocked) desks = desks.filter((d) => !isDeskLocked(d));
+  return desks;
+}
+
+function syncDeskBatchPanel() {
+  const countEl = $el('ep-multi-desk-count');
+  const applyBtn = $el('ep-batch-apply');
+  const selected = selectedDeskRecords({ includePrimary: false, skipLocked: false });
+  const locked = selected.filter((d) => isDeskLocked(d)).length;
+  const editable = selected.length - locked;
+  if (countEl) {
+    countEl.textContent = locked > 0
+      ? `Выбрано мест: ${selected.length} (редактируемо: ${editable}, закреплено: ${locked})`
+      : `Выбрано мест: ${selected.length}`;
+  }
+  if (applyBtn) applyBtn.disabled = editable <= 0;
+}
+
+function applyDeskBatchProps() {
+  if (!ld || !hasMultiDeskSelection()) return;
+  const targets = selectedDeskRecords({ includePrimary: false, skipLocked: true });
+  const lockedSkipped = selectedDeskRecords({ includePrimary: false, skipLocked: false }).length - targets.length;
+  if (!targets.length) {
+    edToast('Выбранные места закреплены и недоступны для редактирования', 'info');
+    return;
+  }
+
+  const statusRaw = String($el('ep-batch-status')?.value || '').trim();
+  const status = ['available', 'occupied', 'disabled'].includes(statusRaw) ? statusRaw : null;
+  const bookable = parseBatchBool('ep-batch-bookable');
+  const fixed = parseBatchBool('ep-batch-fixed');
+  const locked = parseBatchBool('ep-batch-locked');
+  const w = _numOrNull('ep-batch-w');
+  const h = _numOrNull('ep-batch-h');
+  const r = _numOrNull('ep-batch-r');
+
+  const hasAnyPatch =
+    status !== null ||
+    bookable !== null ||
+    fixed !== null ||
+    locked !== null ||
+    w !== null ||
+    h !== null ||
+    r !== null;
+
+  if (!hasAnyPatch) {
+    edToast('Укажите хотя бы одно свойство для пакетного применения', 'info');
+    return;
+  }
+
+  for (const d of targets) {
+    if (status !== null) d.status = status;
+    if (bookable !== null) d.bookable = bookable;
+    if (fixed !== null) d.fixed = fixed;
+    if (locked !== null) d.locked = locked;
+    if (w !== null) d.w = Math.max(1, w);
+    if (h !== null) d.h = Math.max(1, h);
+    if (r !== null) d.r = normalizeDeskRotation(r);
+  }
+
+  markDirty();
+  renderDesks();
+  renderSelection();
+  renderObjectList();
+  syncDeskBatchPanel();
+
+  if (lockedSkipped > 0) {
+    edToast(`Обновлено мест: ${targets.length}. Закреплено и пропущено: ${lockedSkipped}`, 'info');
+  } else {
+    edToast(`Обновлено мест: ${targets.length}`, 'success');
+  }
+}
+
+function rotateDeskSelectionBy(deltaDeg) {
+  const delta = Number(deltaDeg);
+  if (!ld || !Number.isFinite(delta) || Math.abs(delta) < 1e-6) return false;
+
+  const selectedIds = selectedDeskIds({ includePrimary: true });
+  if (!selectedIds.length) return false;
+
+  const movable = selectedDeskRecords({ includePrimary: true, skipLocked: true });
+  const lockedSkipped = selectedIds.length - movable.length;
+  if (!movable.length) {
+    edToast('Выбранные места закреплены и не могут быть повернуты', 'info');
+    return false;
+  }
+
+  const box = deskSelectionBounds(selectedIds);
+  if (!box) return false;
+
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  const rad = _degToRad(delta);
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+
+  for (const d of movable) {
+    const deskCx = d.x + d.w / 2;
+    const deskCy = d.y + d.h / 2;
+    const vx = deskCx - cx;
+    const vy = deskCy - cy;
+    const nextCx = cx + vx * cos - vy * sin;
+    const nextCy = cy + vx * sin + vy * cos;
+    d.x = snapV(nextCx - d.w / 2);
+    d.y = snapV(nextCy - d.h / 2);
+    d.r = normalizeDeskRotation((d.r || 0) + delta);
+  }
+
+  markDirty();
+  renderDesks();
+  renderSelection();
+  renderObjectList();
+
+  if (ed.selType === 'desk' && ed.selId) {
+    const active = ld.desks.find((d) => d.id === ed.selId);
+    if (active) {
+      _v('ep-x', Math.round(active.x));
+      _v('ep-y', Math.round(active.y));
+      _v('ep-r', Math.round(active.r || 0));
+    }
+  } else if (hasMultiDeskSelection()) {
+    syncDeskBatchPanel();
+  }
+
+  if (lockedSkipped > 0) {
+    edToast(`Повернуто мест: ${movable.length}. Закреплено и пропущено: ${lockedSkipped}`, 'info');
+  }
+  return true;
+}
+
+function toggleStructLabelAngleField() {
+  const field = $el('ep-struct-label-angle-field');
+  if (!field) return;
+  const orient = String($el('ep-struct-label-orient')?.value || 'horizontal').trim().toLowerCase();
+  field.classList.toggle('ed-hidden', orient !== 'angle');
+}
+
 function initPropsListeners() {
-  const deskFields = ['ep-label','ep-name','ep-team','ep-dept','ep-assigned','ep-status','ep-x','ep-y','ep-w','ep-h','ep-r'];
-  deskFields.forEach(fid => {
+  const deskTextFields = ['ep-label','ep-name','ep-team','ep-dept','ep-assigned'];
+  deskTextFields.forEach(fid => {
     $el(fid)?.addEventListener('input', () => applyDeskProps());
     $el(fid)?.addEventListener('change', () => applyDeskProps());
   });
-  ['ep-bookable','ep-fixed'].forEach(fid => {
+  ['ep-status','ep-x','ep-y','ep-w','ep-h','ep-r'].forEach(fid => {
     $el(fid)?.addEventListener('change', () => applyDeskProps());
   });
+  ['ep-bookable','ep-fixed','ep-locked'].forEach(fid => {
+    $el(fid)?.addEventListener('change', () => applyDeskProps());
+  });
+  $el('ep-rot-left')?.addEventListener('click', () => rotateDeskSelectionBy(-15));
+  $el('ep-rot-right')?.addEventListener('click', () => rotateDeskSelectionBy(15));
+  $el('ep-rot-reset')?.addEventListener('click', () => {
+    if (ed.selType !== 'desk' || !ed.selId || !ld) return;
+    const d = ld.desks.find((x) => x.id === ed.selId);
+    if (!d || isDeskLocked(d)) return;
+    if (Math.abs(d.r || 0) < 1e-6) return;
+    d.r = 0;
+    _v('ep-r', 0);
+    markDirty();
+    renderDesks();
+    renderSelection();
+    renderObjectList();
+  });
+  $el('ep-batch-apply')?.addEventListener('click', () => applyDeskBatchProps());
 
   $el('ep-desk-del')?.addEventListener('click', () => {
     if (!ed.selId || ed.selType !== 'desk') return;
+    const d = ld?.desks?.find((x) => x.id === ed.selId);
+    if (isDeskLocked(d)) {
+      edToast('Объект закреплён: удаление недоступно', 'info');
+      return;
+    }
     ld.desks = ld.desks.filter(d => d.id !== ed.selId);
     deselect();
     markDirty();
@@ -1527,12 +2031,15 @@ function initPropsListeners() {
   });
 
   // Struct props
-  ['ep-struct-type','ep-struct-thick','ep-struct-closed','ep-struct-color','ep-struct-label-size'].forEach(fid => {
-    $el(fid)?.addEventListener('change', () => applyStructProps());
+  ['ep-struct-type','ep-struct-thick','ep-struct-closed','ep-struct-locked','ep-struct-color','ep-struct-label-size','ep-struct-label-pos','ep-struct-label-orient'].forEach(fid => {
+    $el(fid)?.addEventListener('change', () => applyStructProps({ syncForm: true }));
   });
-  $el('ep-struct-label-size')?.addEventListener('input', () => applyStructProps());
-  $el('ep-struct-label')?.addEventListener('input', () => applyStructProps());
-  $el('ep-struct-label')?.addEventListener('change', () => applyStructProps());
+  $el('ep-struct-label-orient')?.addEventListener('change', () => toggleStructLabelAngleField());
+  $el('ep-struct-label-angle')?.addEventListener('change', () => applyStructProps({ syncForm: true }));
+  $el('ep-struct-label-angle')?.addEventListener('input', () => applyStructProps({ syncForm: false }));
+  $el('ep-struct-label-size')?.addEventListener('input', () => applyStructProps({ syncForm: false }));
+  $el('ep-struct-label')?.addEventListener('input', () => applyStructProps({ syncForm: false }));
+  $el('ep-struct-label')?.addEventListener('change', () => applyStructProps({ syncForm: true }));
   $el('ep-struct-del')?.addEventListener('click', () => {
     if (!ed.selId) return;
     deleteStructEl(ed.selType, ed.selId);
@@ -1549,30 +2056,37 @@ function applyDeskProps() {
   d.dept        = $el('ep-dept')?.value || null;
   d.bookable    = !!$el('ep-bookable')?.checked;
   d.fixed       = !!$el('ep-fixed')?.checked;
+  d.locked      = !!$el('ep-locked')?.checked;
   d.assigned_to = $el('ep-assigned')?.value || null;
   d.status      = $el('ep-status')?.value || 'available';
-  d.x = parseFloat($el('ep-x')?.value) || d.x;
-  d.y = parseFloat($el('ep-y')?.value) || d.y;
-  d.w = parseFloat($el('ep-w')?.value) || d.w;
-  d.h = parseFloat($el('ep-h')?.value) || d.h;
-  d.r = parseFloat($el('ep-r')?.value) || 0;
+  const x = _numOrNull('ep-x');
+  const y = _numOrNull('ep-y');
+  const w = _numOrNull('ep-w');
+  const h = _numOrNull('ep-h');
+  const r = _numOrNull('ep-r');
+  if (x !== null) d.x = x;
+  if (y !== null) d.y = y;
+  if (w !== null) d.w = Math.max(1, w);
+  if (h !== null) d.h = Math.max(1, h);
+  if (r !== null) d.r = normalizeDeskRotation(r);
   markDirty();
   renderDesks();
   renderSelection();
   renderObjectList();
 }
 
-function applyStructProps() {
+function applyStructProps(opts = {}) {
+  const { syncForm = true } = opts;
   if (!ed.selType || !ed.selId || !ld) return;
   const newType = $el('ep-struct-type')?.value;
-  const thick   = parseFloat($el('ep-struct-thick')?.value) || 4;
   const closed  = !!$el('ep-struct-closed')?.checked;
+  const locked  = !!$el('ep-struct-locked')?.checked;
   const zoneLabel = ($el('ep-struct-label')?.value || '').trim();
   const zoneColor = normalizeHexColor($el('ep-struct-color')?.value, DEFAULT_ZONE_COLOR);
-  const zoneLabelSizeRaw = parseFloat($el('ep-struct-label-size')?.value);
-  const zoneLabelSizeValue = Number.isFinite(zoneLabelSizeRaw)
-    ? Math.max(8, Math.min(120, zoneLabelSizeRaw))
-    : defaultZoneLabelSize();
+  const zoneLabelPos = normalizeLabelPos($el('ep-struct-label-pos')?.value);
+  const zoneLabelOrient = $el('ep-struct-label-orient')?.value || 'horizontal';
+  const zoneLabelAngleRaw = _numOrNull('ep-struct-label-angle');
+  toggleStructLabelAngleField();
 
   // Find in current array
   const srcArr = ed.selType === 'wall'
@@ -1586,15 +2100,34 @@ function applyStructProps() {
   if (idx < 0) return;
 
   const el = srcArr[idx];
+  const thickInput = _numOrNull('ep-struct-thick');
+  const thickCurrent = Number(el?.thick);
+  const thick = thickInput !== null
+    ? Math.max(0.5, Math.min(40, thickInput))
+    : (Number.isFinite(thickCurrent) ? thickCurrent : 4);
+  const labelSizeInput = _numOrNull('ep-struct-label-size');
+  const labelSizeCurrent = Number(el?.label_size);
+  const zoneLabelSizeValue = labelSizeInput !== null
+    ? Math.max(8, Math.min(120, labelSizeInput))
+    : (Number.isFinite(labelSizeCurrent) ? Math.max(8, Math.min(120, labelSizeCurrent)) : defaultZoneLabelSize());
+  const labelAngleCurrent = Number.isFinite(Number(el?.label_angle)) ? Number(el.label_angle) : 0;
+  const zoneLabelAngle = labelAngleFromInputs(zoneLabelOrient, zoneLabelAngleRaw === null ? labelAngleCurrent : zoneLabelAngleRaw);
+  if (syncForm) _v('ep-struct-label-angle', Math.round(zoneLabelAngle));
+
   el.thick  = thick;
   el.closed = closed;
+  el.locked = locked;
   if (ed.selType === 'boundary') {
     el.label = zoneLabel || null;
     el.color = zoneColor;
     el.label_size = zoneLabelSizeValue;
-  } else if (Object.prototype.hasOwnProperty.call(el, 'color')) {
-    delete el.color;
+    el.label_pos = zoneLabelPos;
+    el.label_angle = zoneLabelAngle;
+  } else {
+    if (Object.prototype.hasOwnProperty.call(el, 'color')) delete el.color;
     if (Object.prototype.hasOwnProperty.call(el, 'label_size')) delete el.label_size;
+    if (Object.prototype.hasOwnProperty.call(el, 'label_pos')) delete el.label_pos;
+    if (Object.prototype.hasOwnProperty.call(el, 'label_angle')) delete el.label_angle;
   }
 
   // If type changed, move to different array
@@ -1611,9 +2144,13 @@ function applyStructProps() {
       el.color = zoneColor;
       el.label = zoneLabel || el.label || null;
       el.label_size = zoneLabelSizeValue;
-    } else if (Object.prototype.hasOwnProperty.call(el, 'color')) {
-      delete el.color;
+      el.label_pos = zoneLabelPos;
+      el.label_angle = zoneLabelAngle;
+    } else {
+      if (Object.prototype.hasOwnProperty.call(el, 'color')) delete el.color;
       if (Object.prototype.hasOwnProperty.call(el, 'label_size')) delete el.label_size;
+      if (Object.prototype.hasOwnProperty.call(el, 'label_pos')) delete el.label_pos;
+      if (Object.prototype.hasOwnProperty.call(el, 'label_angle')) delete el.label_angle;
     }
     dstArr.push(el);
     ed.selType = newType;
@@ -1622,11 +2159,16 @@ function applyStructProps() {
   markDirty();
   renderStructure();
   renderObjectList();
-  showPropsFor(ed.selType, ed.selId);
+  if (syncForm) showPropsFor(ed.selType, ed.selId);
 }
 
 function deleteStructEl(type, id) {
   if (!ld || !type || !id) return;
+  const el = getStructByTypeId(type, id);
+  if (isStructLocked(el)) {
+    edToast('Объект закреплён: удаление недоступно', 'info');
+    return;
+  }
   if (type === 'wall')      ld.walls      = ld.walls.filter(x => x.id !== id);
   if (type === 'boundary')  ld.boundaries = ld.boundaries.filter(x => x.id !== id);
   if (type === 'partition') ld.partitions = ld.partitions.filter(x => x.id !== id);
@@ -1639,20 +2181,43 @@ function deleteStructEl(type, id) {
 function deleteSelectedDesks() {
   if (!ld) return false;
   if (hasMultiDeskSelection()) {
-    const ids = new Set(ed.multiDeskIds);
-    const before = ld.desks.length;
-    ld.desks = ld.desks.filter(d => !ids.has(d.id));
-    const removed = before - ld.desks.length;
+    const ids = new Set(ed.multiDeskIds || []);
+    let removed = 0;
+    let lockedSkipped = 0;
+    ld.desks = (ld.desks || []).filter((d) => {
+      if (!ids.has(d.id)) return true;
+      if (isDeskLocked(d)) {
+        lockedSkipped += 1;
+        return true;
+      }
+      removed += 1;
+      return false;
+    });
     clearSelectionState();
-    if (removed > 0) {
-      markDirty();
-      renderAll();
-      edToast(`Удалено мест: ${removed}`, 'info');
-      return true;
+    if (removed > 0 || lockedSkipped > 0) {
+      if (removed > 0) {
+        markDirty();
+        renderAll();
+      } else {
+        renderAll();
+      }
+      if (removed > 0 && lockedSkipped > 0) {
+        edToast(`Удалено мест: ${removed}. Закреплено и пропущено: ${lockedSkipped}`, 'info');
+      } else if (removed > 0) {
+        edToast(`Удалено мест: ${removed}`, 'info');
+      } else {
+        edToast('Выбранные места закреплены и не могут быть удалены', 'info');
+      }
+      return removed > 0;
     }
     return false;
   }
   if (ed.selType === 'desk' && ed.selId) {
+    const target = (ld.desks || []).find((d) => d.id === ed.selId);
+    if (isDeskLocked(target)) {
+      edToast('Объект закреплён: удаление недоступно', 'info');
+      return false;
+    }
     ld.desks = ld.desks.filter(d => d.id !== ed.selId);
     clearSelectionState();
     markDirty();
@@ -1662,20 +2227,117 @@ function deleteSelectedDesks() {
   return false;
 }
 
-function deleteSelectedWalls() {
-  if (!ld || !hasMultiWallSelection()) return false;
-  const ids = new Set(ed.multiWallIds || []);
-  const before = ld.walls.length;
-  ld.walls = ld.walls.filter(w => !ids.has(w.id));
-  const removed = before - ld.walls.length;
-  clearSelectionState();
-  if (removed > 0) {
-    markDirty();
-    renderAll();
-    edToast(`Удалено стен: ${removed}`, 'info');
+function deleteSelectedStructures() {
+  if (!ld) return false;
+  if (hasMultiStructSelection()) {
+    const byType = { wall: new Set(), boundary: new Set(), partition: new Set(), door: new Set() };
+    (ed.multiStructKeys || []).forEach((raw) => {
+      const parsed = parseStructSelKey(raw);
+      if (parsed) byType[parsed.type]?.add(parsed.id);
+    });
+
+    const out = { removed: 0, locked: 0, wall: 0, boundary: 0, partition: 0, door: 0 };
+    const prune = (arr, type) => (arr || []).filter((el) => {
+      if (!byType[type]?.has(el.id)) return true;
+      if (isStructLocked(el)) {
+        out.locked += 1;
+        return true;
+      }
+      out.removed += 1;
+      out[type] += 1;
+      return false;
+    });
+
+    ld.walls = prune(ld.walls, 'wall');
+    ld.boundaries = prune(ld.boundaries, 'boundary');
+    ld.partitions = prune(ld.partitions, 'partition');
+    ld.doors = prune(ld.doors, 'door');
+    clearSelectionState();
+    if (out.removed > 0 || out.locked > 0) {
+      if (out.removed > 0) {
+        markDirty();
+        renderAll();
+      } else {
+        renderAll();
+      }
+      if (out.removed > 0 && out.locked > 0) {
+        edToast(`Удалено: ${out.removed} (стен ${out.wall}, границ ${out.boundary}, перегородок ${out.partition}, дверей ${out.door}). Закреплено: ${out.locked}`, 'info');
+      } else if (out.removed > 0) {
+        edToast(`Удалено: ${out.removed} (стен ${out.wall}, границ ${out.boundary}, перегородок ${out.partition}, дверей ${out.door})`, 'info');
+      } else {
+        edToast('Выбранные элементы закреплены и не могут быть удалены', 'info');
+      }
+      return out.removed > 0;
+    }
+    return false;
+  }
+  if (isStructType(ed.selType) && ed.selId) {
+    deleteStructEl(ed.selType, ed.selId);
     return true;
   }
   return false;
+}
+
+function deleteSelectedMultiObjects() {
+  if (!ld) return false;
+  const hasDesk = hasMultiDeskSelection();
+  const hasStruct = hasMultiStructSelection();
+  if (!hasDesk && !hasStruct) return false;
+
+  const selectedDeskIds = new Set(ed.multiDeskIds || []);
+  const selectedStructByType = { wall: new Set(), boundary: new Set(), partition: new Set(), door: new Set() };
+  (ed.multiStructKeys || []).forEach((raw) => {
+    const parsed = parseStructSelKey(raw);
+    if (parsed) selectedStructByType[parsed.type]?.add(parsed.id);
+  });
+
+  let removedDesks = 0;
+  let lockedDesks = 0;
+  ld.desks = (ld.desks || []).filter((d) => {
+    if (!selectedDeskIds.has(d.id)) return true;
+    if (isDeskLocked(d)) {
+      lockedDesks += 1;
+      return true;
+    }
+    removedDesks += 1;
+    return false;
+  });
+
+  const removedStruct = { wall: 0, boundary: 0, partition: 0, door: 0 };
+  let lockedStruct = 0;
+  const pruneStruct = (arr, type) => (arr || []).filter((el) => {
+    if (!selectedStructByType[type]?.has(el.id)) return true;
+    if (isStructLocked(el)) {
+      lockedStruct += 1;
+      return true;
+    }
+    removedStruct[type] += 1;
+    return false;
+  });
+  ld.walls = pruneStruct(ld.walls, 'wall');
+  ld.boundaries = pruneStruct(ld.boundaries, 'boundary');
+  ld.partitions = pruneStruct(ld.partitions, 'partition');
+  ld.doors = pruneStruct(ld.doors, 'door');
+
+  const totalRemovedStruct = removedStruct.wall + removedStruct.boundary + removedStruct.partition + removedStruct.door;
+  const totalRemoved = removedDesks + totalRemovedStruct;
+  const totalLocked = lockedDesks + lockedStruct;
+  clearSelectionState();
+  if (totalRemoved > 0) {
+    markDirty();
+    renderAll();
+  } else {
+    renderAll();
+  }
+
+  if (totalRemoved > 0 && totalLocked > 0) {
+    edToast(`Удалено: ${totalRemoved} (мест ${removedDesks}, стен ${removedStruct.wall}, границ ${removedStruct.boundary}, перегородок ${removedStruct.partition}, дверей ${removedStruct.door}). Закреплено: ${totalLocked}`, 'info');
+  } else if (totalRemoved > 0) {
+    edToast(`Удалено: ${totalRemoved} (мест ${removedDesks}, стен ${removedStruct.wall}, границ ${removedStruct.boundary}, перегородок ${removedStruct.partition}, дверей ${removedStruct.door})`, 'info');
+  } else if (totalLocked > 0) {
+    edToast('Выбранные объекты закреплены и не могут быть удалены', 'info');
+  }
+  return totalRemoved > 0;
 }
 
 function startBackgroundDrag(e, startPt) {
@@ -1750,22 +2412,16 @@ function finishMarqueeSelection() {
   if (isClick) {
     const hit = findNearestObjectAtPoint(m.current || m.start);
     if (hit?.type && hit?.id) {
-      if (hit.type === 'desk' && m.append) {
-        const next = new Set(ed.multiDeskIds || []);
-        if (next.has(hit.id)) next.delete(hit.id);
-        else next.add(hit.id);
-        setMultiDeskSelection(Array.from(next), false);
-      } else if (hit.type === 'wall' && m.append) {
-        const next = new Set(ed.multiWallIds || []);
-        if (next.has(hit.id)) next.delete(hit.id);
-        else next.add(hit.id);
-        setMultiWallSelection(Array.from(next), false);
+      if (m.append) {
+        if (hit.type === 'desk') toggleDeskMultiSelection(hit.id, { keepStruct: true });
+        else if (isStructType(hit.type)) toggleStructMultiSelection(hit.type, hit.id, { keepDesk: true });
       } else {
         selectObj(hit.type, hit.id);
       }
       return true;
     }
     if (!m.append) clearSelectionState();
+    renderStructure();
     renderDesks();
     renderSelection();
     renderObjectList();
@@ -1776,81 +2432,74 @@ function finishMarqueeSelection() {
   const deskIds = (ld.desks || [])
     .filter(d => !(d.x > x2 || d.x + d.w < x1 || d.y > y2 || d.y + d.h < y1))
     .map(d => d.id);
-  const wallIds = (ld.walls || [])
-    .filter(w => wallIntersectsRect(w, x1, y1, x2, y2))
-    .map(w => w.id);
-
-  if (wallIds.length && (!deskIds.length || hasMultiWallSelection())) {
-    setMultiWallSelection(wallIds, m.append);
-  } else {
-    setMultiDeskSelection(deskIds, m.append);
-  }
+  const structKeys = [];
+  STRUCT_TYPES.forEach((type) => {
+    const arr = structArrayByType(type) || [];
+    arr
+      .filter(el => structIntersectsRect(el, x1, y1, x2, y2))
+      .forEach((el) => {
+        const key = structSelKey(type, el.id);
+        if (key) structKeys.push(key);
+      });
+  });
+  setCombinedMultiSelection(deskIds, structKeys, m.append);
   return true;
 }
 
-function startGroupDeskDrag(pointerId, startPt, deskIds) {
+function startGroupDrag(pointerId, startPt) {
   if (!ld) return false;
-  const ids = new Set(deskIds || []);
-  const items = (ld.desks || [])
-    .filter(d => ids.has(d.id))
+  const deskIds = new Set(ed.multiDeskIds || []);
+  const structKeys = new Set(ed.multiStructKeys || []);
+
+  const desks = (ld.desks || [])
+    .filter(d => deskIds.has(d.id) && !isDeskLocked(d))
     .map(d => ({ desk: d, x: d.x, y: d.y }));
-  if (!items.length) return false;
-  ed.dragGroup = { pointerId, startPt, items, moved: false };
+
+  const structs = [];
+  structKeys.forEach((raw) => {
+    const parsed = parseStructSelKey(raw);
+    if (!parsed) return;
+    const el = getStructByTypeId(parsed.type, parsed.id);
+    if (!el || !Array.isArray(el.pts) || isStructLocked(el)) return;
+    structs.push({
+      type: parsed.type,
+      el,
+      pts: el.pts.map(p => [Number(p?.[0] || 0), Number(p?.[1] || 0)]),
+    });
+  });
+
+  if (!desks.length && !structs.length) {
+    edToast('Выбранные объекты закреплены и не могут двигаться', 'info');
+    return false;
+  }
+
+  ed.dragGroup = { pointerId, startPt, desks, structs, moved: false };
   _svg()?.setPointerCapture(pointerId);
   return true;
 }
 
-function updateGroupDeskDrag(pt) {
+function updateGroupDrag(pt) {
   const g = ed.dragGroup;
   if (!g) return;
   const dx = pt.x - g.startPt.x;
   const dy = pt.y - g.startPt.y;
-  for (const it of g.items) {
+  for (const it of (g.desks || [])) {
     it.desk.x = snapV(it.x + dx);
     it.desk.y = snapV(it.y + dy);
   }
+  for (const it of (g.structs || [])) {
+    it.el.pts = it.pts.map(([x, y]) => [snapV(x + dx), snapV(y + dy)]);
+  }
   g.moved = g.moved || Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2;
-  renderDesks();
+  if (g.structs?.length) renderStructure();
+  if (g.desks?.length) renderDesks();
   renderSelection();
 }
 
-function endGroupDeskDrag() {
+function endGroupDrag() {
   if (!ed.dragGroup) return false;
   const moved = !!ed.dragGroup.moved;
   ed.dragGroup = null;
-  if (moved) markDirty();
-  return moved;
-}
-
-function startGroupWallDrag(pointerId, startPt, wallIds) {
-  if (!ld) return false;
-  const ids = new Set(wallIds || []);
-  const items = (ld.walls || [])
-    .filter(w => ids.has(w.id))
-    .map(w => ({ wall: w, pts: (w.pts || []).map(p => [Number(p?.[0] || 0), Number(p?.[1] || 0)]) }));
-  if (!items.length) return false;
-  ed.dragWallGroup = { pointerId, startPt, items, moved: false };
-  _svg()?.setPointerCapture(pointerId);
-  return true;
-}
-
-function updateGroupWallDrag(pt) {
-  const g = ed.dragWallGroup;
-  if (!g) return;
-  const dx = pt.x - g.startPt.x;
-  const dy = pt.y - g.startPt.y;
-  for (const it of g.items) {
-    it.wall.pts = it.pts.map(([x, y]) => [snapV(x + dx), snapV(y + dy)]);
-  }
-  g.moved = g.moved || Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2;
-  renderStructure();
-  renderSelection();
-}
-
-function endGroupWallDrag() {
-  if (!ed.dragWallGroup) return false;
-  const moved = !!ed.dragWallGroup.moved;
-  ed.dragWallGroup = null;
   if (moved) markDirty();
   return moved;
 }
@@ -1870,6 +2519,10 @@ function startSingleStructDrag(type, id, startPt) {
   if (!Array.isArray(arr)) return false;
   const el = arr.find(x => x.id === id);
   if (!el || !Array.isArray(el.pts) || el.pts.length < 2) return false;
+  if (isStructLocked(el)) {
+    edToast('Объект закреплён и не может быть перемещён', 'info');
+    return false;
+  }
 
   const basePts = el.pts.map(p => [Number(p?.[0] || 0), Number(p?.[1] || 0)]);
   let moved = false;
@@ -1970,12 +2623,7 @@ function onSvgPointerMove(e) {
   }
 
   if (ed.dragGroup) {
-    updateGroupDeskDrag(pt);
-    return;
-  }
-
-  if (ed.dragWallGroup) {
-    updateGroupWallDrag(pt);
+    updateGroupDrag(pt);
     return;
   }
 
@@ -2007,7 +2655,11 @@ function onSvgPointerMove(e) {
 
   // Drawing rubber band
   if (ed.drawing) {
-    ed.drawing.rubberPt = [snapV(pt.x), snapV(pt.y)];
+    const last = ed.drawing.pts?.[ed.drawing.pts.length - 1];
+    ed.drawing.rubberPt = getConstrainedDrawPoint(last, pt, {
+      angleLock: !!e.shiftKey,
+      angleStepDeg: DRAW_ANGLE_STEP_DEG,
+    });
     renderDrawing();
   }
 }
@@ -2018,11 +2670,7 @@ function onSvgPointerUp(e) {
     return;
   }
   if (ed.dragGroup) {
-    endGroupDeskDrag();
-    return;
-  }
-  if (ed.dragWallGroup) {
-    endGroupWallDrag();
+    endGroupDrag();
     return;
   }
   if (ed.marquee && finishMarqueeSelection()) {
@@ -2068,8 +2716,12 @@ function onSvgClick(e) {
 
   if (['wall','boundary','partition','door'].includes(ed.mode) && ed.drawing) {
     const pt = svgPt(e);
-    const snapped = [snapV(pt.x), snapV(pt.y)];
     const pts = ed.drawing.pts;
+    const base = pts?.[pts.length - 1];
+    const snapped = getConstrainedDrawPoint(base, pt, {
+      angleLock: !!e.shiftKey,
+      angleStepDeg: DRAW_ANGLE_STEP_DEG,
+    });
 
     // Close boundary on click near first point
     if (ed.mode === 'boundary' && pts.length >= 3) {
@@ -2118,25 +2770,146 @@ function onWheelZoom(e) {
   zoomBy(factor, pt.x, pt.y);
 }
 
+function onRotateHandleDown(e, desk) {
+  if (ed.mode !== 'select') return;
+  if (isDeskLocked(desk)) {
+    edToast('Объект закреплён и не может быть изменён', 'info');
+    return;
+  }
+  e.stopPropagation();
+  e.preventDefault();
+  const captureTarget = _svg();
+  try { captureTarget?.setPointerCapture(e.pointerId); } catch {}
+
+  const cx = desk.x + desk.w / 2;
+  const cy = desk.y + desk.h / 2;
+  const startPt = svgPt(e);
+  const startPointerAngle = Math.atan2(startPt.y - cy, startPt.x - cx);
+  const startDeskRotation = normalizeDeskRotation(desk.r || 0);
+  let moved = false;
+
+  const onMove = (ev) => {
+    const p = svgPt(ev);
+    const currentPointerAngle = Math.atan2(p.y - cy, p.x - cx);
+    let delta = currentPointerAngle - startPointerAngle;
+    while (delta > Math.PI) delta -= Math.PI * 2;
+    while (delta < -Math.PI) delta += Math.PI * 2;
+
+    const step = ev.shiftKey ? 1 : 5;
+    const raw = startDeskRotation + delta * (180 / Math.PI);
+    const snapped = Math.round(raw / step) * step;
+    const next = normalizeDeskRotation(snapped);
+    if (Math.abs(next - (desk.r || 0)) > 1e-6) moved = true;
+    desk.r = next;
+    _v('ep-r', Math.round(next));
+    renderDesks();
+    renderSelection();
+  };
+
+  const onUp = () => {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    try { captureTarget?.releasePointerCapture(e.pointerId); } catch {}
+    if (moved) {
+      markDirty();
+      renderObjectList();
+    }
+  };
+
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+}
+
+function onMultiDeskRotateHandleDown(e, deskIds) {
+  if (ed.mode !== 'select' || !ld) return;
+  const ids = Array.isArray(deskIds) ? deskIds.filter(Boolean) : [];
+  if (!ids.length) return;
+
+  const targets = (ld.desks || []).filter((d) => ids.includes(d.id) && !isDeskLocked(d));
+  if (!targets.length) return;
+
+  e.stopPropagation();
+  e.preventDefault();
+  const captureTarget = _svg();
+  try { captureTarget?.setPointerCapture(e.pointerId); } catch {}
+
+  const box = deskSelectionBounds(ids);
+  if (!box) return;
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  const startPt = svgPt(e);
+  const startPointerAngle = Math.atan2(startPt.y - cy, startPt.x - cx);
+  const snapshots = targets.map((d) => ({
+    desk: d,
+    cx: d.x + d.w / 2,
+    cy: d.y + d.h / 2,
+    r: normalizeDeskRotation(d.r || 0),
+  }));
+  let moved = false;
+
+  const onMove = (ev) => {
+    const p = svgPt(ev);
+    const currentPointerAngle = Math.atan2(p.y - cy, p.x - cx);
+    let delta = currentPointerAngle - startPointerAngle;
+    while (delta > Math.PI) delta -= Math.PI * 2;
+    while (delta < -Math.PI) delta += Math.PI * 2;
+
+    const step = ev.shiftKey ? 1 : 5;
+    const rawDeltaDeg = delta * (180 / Math.PI);
+    const snappedDeltaDeg = Math.round(rawDeltaDeg / step) * step;
+    const deltaRad = _degToRad(snappedDeltaDeg);
+    const cos = Math.cos(deltaRad);
+    const sin = Math.sin(deltaRad);
+    moved = moved || Math.abs(snappedDeltaDeg) > 1e-6;
+
+    for (const it of snapshots) {
+      const vx = it.cx - cx;
+      const vy = it.cy - cy;
+      const nextCx = cx + vx * cos - vy * sin;
+      const nextCy = cy + vx * sin + vy * cos;
+      it.desk.x = snapV(nextCx - it.desk.w / 2);
+      it.desk.y = snapV(nextCy - it.desk.h / 2);
+      it.desk.r = normalizeDeskRotation(it.r + snappedDeltaDeg);
+    }
+
+    renderDesks();
+    renderSelection();
+  };
+
+  const onUp = () => {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    try { captureTarget?.releasePointerCapture(e.pointerId); } catch {}
+    if (!moved) return;
+    markDirty();
+    renderObjectList();
+    syncDeskBatchPanel();
+  };
+
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+}
+
 function onDeskPointerDown(e, desk) {
   if (ed.mode !== 'select') return;
   e.stopPropagation();
 
   if (e.shiftKey) {
-    const next = new Set(ed.multiDeskIds || []);
-    if (next.has(desk.id)) next.delete(desk.id);
-    else next.add(desk.id);
-    setMultiDeskSelection(Array.from(next), false);
+    toggleDeskMultiSelection(desk.id, { keepStruct: true });
     return;
   }
 
-  if (hasMultiDeskSelection() && (ed.multiDeskIds || []).includes(desk.id)) {
+  if ((hasMultiDeskSelection() || hasMultiStructSelection()) && (ed.multiDeskIds || []).includes(desk.id)) {
     const startPt = svgPt(e);
-    startGroupDeskDrag(e.pointerId, startPt, ed.multiDeskIds);
+    startGroupDrag(e.pointerId, startPt);
     return;
   }
 
   selectObj('desk', desk.id);
+  if (isDeskLocked(desk)) {
+    edToast('Объект закреплён и не может быть перемещён', 'info');
+    return;
+  }
 
   const startPt = svgPt(e);
   const sx = desk.x;
@@ -2145,7 +2918,7 @@ function onDeskPointerDown(e, desk) {
 
   const onMove = ev => {
     const p = svgPt(ev);
-    moved = true;
+    moved = moved || Math.abs(p.x - startPt.x) > 0.2 || Math.abs(p.y - startPt.y) > 0.2;
     desk.x = snapV(sx + p.x - startPt.x);
     desk.y = snapV(sy + p.y - startPt.y);
     _v('ep-x', Math.round(desk.x));
@@ -2163,6 +2936,10 @@ function onDeskPointerDown(e, desk) {
 }
 
 function onResizeHandleDown(e, desk, handleIdx) {
+  if (isDeskLocked(desk)) {
+    edToast('Объект закреплён и не может быть изменён', 'info');
+    return;
+  }
   e.stopPropagation();
   const startPt = svgPt(e);
   const sx = desk.x, sy = desk.y, sw2 = desk.w, sh = desk.h;
@@ -2197,19 +2974,22 @@ function onResizeHandleDown(e, desk, handleIdx) {
 function onStructPointerDown(e, type, id) {
   if (ed.mode !== 'select') return;
   e.stopPropagation();
-  if (type === 'wall' && e.shiftKey) {
-    const next = new Set(ed.multiWallIds || []);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setMultiWallSelection(Array.from(next), false);
+  if (e.shiftKey) {
+    toggleStructMultiSelection(type, id, { keepDesk: true });
     return;
   }
-  if (type === 'wall' && hasMultiWallSelection() && (ed.multiWallIds || []).includes(id)) {
+  const key = structSelKey(type, id);
+  if ((hasMultiDeskSelection() || hasMultiStructSelection()) && key && (ed.multiStructKeys || []).includes(key)) {
     const startPt = svgPt(e);
-    startGroupWallDrag(e.pointerId, startPt, ed.multiWallIds);
+    startGroupDrag(e.pointerId, startPt);
     return;
   }
   selectObj(type, id);
+  const el = getStructByTypeId(type, id);
+  if (isStructLocked(el)) {
+    edToast('Объект закреплён и не может быть перемещён', 'info');
+    return;
+  }
   startSingleStructDrag(type, id, svgPt(e));
 }
 
@@ -2223,12 +3003,20 @@ function finishDrawing(close) {
 
   if (pts.length < 2) return;
 
-  const el = { id: uid(), pts, thick: type === 'wall' ? 8 : type === 'partition' ? 3 : type === 'door' ? 2.2 : 2,
-                closed: close || type === 'boundary', conf: 1.0 };
+  const el = {
+    id: uid(),
+    pts,
+    thick: type === 'wall' ? 8 : type === 'partition' ? 3 : type === 'door' ? 2.2 : 2,
+    closed: close || type === 'boundary',
+    conf: 1.0,
+    locked: false,
+  };
   if (type === 'boundary') {
     el.label = null;
     el.color = DEFAULT_ZONE_COLOR;
     el.label_size = defaultZoneLabelSize();
+    el.label_pos = 'center';
+    el.label_angle = 0;
   }
 
   if (type === 'wall')      ld.walls.push(el);
@@ -2796,11 +3584,10 @@ function importReason(el) {
     && rawFill !== 'transparent'
     && rawFill !== '#00000000'
     && !/^rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0(?:\.0+)?\s*\)$/.test(rawFill);
-  const typeHint = `класс ${importTypeLabel(importDefaultType(el))}`;
   const thickTxt = Number.isFinite(thick) ? `толщина ${thick.toFixed(1)}` : 'толщина n/a';
   const geomTxt = closed ? 'замкнутый контур (зона/fill)' : 'открытая линия';
   const fillTxt = closed ? (hasFill ? 'fill есть' : 'fill нет') : 'fill n/a';
-  return `${typeHint} · ${geomTxt} · ${fillTxt} · ${thickTxt} · длина ${len}`;
+  return `${geomTxt} · ${fillTxt} · ${thickTxt} · длина ${len}`;
 }
 
 function buildImportItems(res) {
@@ -2972,6 +3759,7 @@ function applyImportItems(indices) {
       closed: !!el.closed,
       conf: el.conf,
       label: el.label || null,
+      locked: false,
     };
     if (type === 'boundary') {
       item.color = normalizeHexColor(el.color, DEFAULT_ZONE_COLOR);
@@ -3009,7 +3797,7 @@ function renderImportPreview() {
     const shape = _makePolyEl(tag, pts, !!el.closed);
 
     shape.setAttribute('pointer-events', 'none');
-    shape.setAttribute('stroke-linecap', 'round');
+    shape.setAttribute('stroke-linecap', 'butt');
     shape.setAttribute('stroke-linejoin', 'round');
 
     if (type === 'wall') {
@@ -3472,13 +4260,14 @@ function initEditorKeyboard() {
       return;
     }
     if (e.key === 'Shift') {
-      if (!ed.shiftFine) {
+      if (!ed.shiftDown) ed.shiftDown = true;
+      if (!isDrawMode(ed.mode) && !ed.shiftFine) {
         ed.shiftFine = true;
         if (isDeskBlockMode() && ed.deskTool.preview) {
           rebuildDeskBlockPreview(ed.deskTool.preview.current || ed.deskTool.preview.anchor);
         }
-        updateStatusBar();
       }
+      updateStatusBar();
       return;
     }
 
@@ -3499,6 +4288,12 @@ function initEditorKeyboard() {
       case 'o': case 'O': setMode('door');      break;
       case 'd': case 'D': setMode('desk');      break;
       case 'f': case 'F': fitToScreen();         break;
+      case 'q': case 'Q':
+        if (rotateDeskSelectionBy(e.shiftKey ? -1 : -5)) e.preventDefault();
+        break;
+      case 'e': case 'E':
+        if (rotateDeskSelectionBy(e.shiftKey ? 1 : 5)) e.preventDefault();
+        break;
       case 'g': case 'G':
         ed.snapGrid = !ed.snapGrid;
         document.getElementById('ed-grid-rect')?.style.setProperty('display', ed.snapGrid ? '' : 'none');
@@ -3531,13 +4326,23 @@ function initEditorKeyboard() {
         if (ed.drawing) finishDrawing(ed.mode === 'boundary');
         break;
       case 'Delete': case 'Backspace':
-        if (deleteSelectedDesks()) {
+        if (hasMultiDeskSelection() && hasMultiStructSelection()) {
+          deleteSelectedMultiObjects();
           break;
         }
-        if (deleteSelectedWalls()) {
+        if (hasMultiDeskSelection()) {
+          deleteSelectedDesks();
           break;
         }
-        if (ed.selType) {
+        if (hasMultiStructSelection()) {
+          deleteSelectedStructures();
+          break;
+        }
+        if (ed.selType === 'desk') {
+          deleteSelectedDesks();
+          break;
+        }
+        if (isStructType(ed.selType)) {
           deleteStructEl(ed.selType, ed.selId);
         }
         break;
@@ -3554,6 +4359,7 @@ function initEditorKeyboard() {
       return;
     }
     if (e.key === 'Shift') {
+      ed.shiftDown = false;
       ed.shiftFine = false;
       if (isDeskBlockMode() && ed.deskTool.preview) {
         rebuildDeskBlockPreview(ed.deskTool.preview.current || ed.deskTool.preview.anchor);
@@ -3568,9 +4374,10 @@ function initEditorKeyboard() {
   });
 
   window.addEventListener('blur', () => {
-    if (!ed.altSnapOff && !ed.shiftFine) return;
+    if (!ed.altSnapOff && !ed.shiftFine && !ed.shiftDown) return;
     ed.altSnapOff = false;
     ed.shiftFine = false;
+    ed.shiftDown = false;
     if (isDeskBlockMode() && ed.deskTool.preview) {
       rebuildDeskBlockPreview(ed.deskTool.preview.current || ed.deskTool.preview.anchor);
     }

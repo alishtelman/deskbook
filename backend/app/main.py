@@ -965,6 +965,44 @@ async def check_availability(
         raise HTTPException(status_code=404, detail="Desk not found")
 
 
+@app.post("/availability/batch", response_model=schemas.AvailabilityBatchResponse)
+async def check_availability_batch(
+    payload: schemas.AvailabilityBatchRequest,
+    db: Session = Depends(get_db),
+) -> schemas.AvailabilityBatchResponse:
+    if payload.start_time >= payload.end_time:
+        raise HTTPException(status_code=400, detail="Start time must be before end time")
+
+    items: list[schemas.AvailabilityBatchItem] = []
+    for desk_id in payload.desk_ids:
+        try:
+            result = crud.check_availability(
+                db=db,
+                desk_id=desk_id,
+                reservation_date=payload.reservation_date,
+                start_time=payload.start_time,
+                end_time=payload.end_time,
+                user_id=payload.user_id,
+            )
+            items.append(
+                schemas.AvailabilityBatchItem(
+                    desk_id=desk_id,
+                    available=result.available,
+                    reason=result.reason,
+                )
+            )
+        except KeyError:
+            items.append(
+                schemas.AvailabilityBatchItem(
+                    desk_id=desk_id,
+                    available=False,
+                    reason="Desk not found",
+                )
+            )
+
+    return schemas.AvailabilityBatchResponse(items=items)
+
+
 # ---------------------------------------------------------------------------
 # Reservations
 # ---------------------------------------------------------------------------
