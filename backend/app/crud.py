@@ -391,7 +391,7 @@ def create_reservation(db: Session, payload: schemas.ReservationCreate) -> model
             .first()
         )
         if policy is not None:
-            today = date.today()
+            today = _today_app()
             reservation_date = payload.reservation_date
 
             # min_days_ahead validation
@@ -422,6 +422,22 @@ def create_reservation(db: Session, payload: schemas.ReservationCreate) -> model
                         f"Максимальная длительность брони — {policy.max_duration_minutes} минут"
                     )
 
+            # max_bookings_per_day validation
+            if policy.max_bookings_per_day is not None:
+                existing_today = (
+                    db.query(models.Reservation)
+                    .filter(
+                        models.Reservation.user_id == payload.user_id,
+                        models.Reservation.reservation_date == payload.reservation_date,
+                        models.Reservation.status == "active",
+                    )
+                    .count()
+                )
+                if existing_today >= policy.max_bookings_per_day:
+                    raise ValueError(
+                        f"Превышен лимит бронирований на день: максимум {policy.max_bookings_per_day}"
+                    )
+
     # Lock active reservations for this desk/date to check overlaps atomically
     active = (
         db.query(models.Reservation)
@@ -436,10 +452,14 @@ def create_reservation(db: Session, payload: schemas.ReservationCreate) -> model
 
     for res in active:
         if res.start_time and res.end_time and payload.start_time and payload.end_time:
+            # Both have time ranges — check actual time overlap
             if _time_overlaps(
                 payload.start_time, payload.end_time, res.start_time, res.end_time
             ):
-                raise ValueError("Desk already reserved for the requested time.")
+                raise ValueError("Место уже занято на выбранное время")
+        else:
+            # At least one is a day-level reservation — any same-day booking conflicts
+            raise ValueError("Место уже занято на выбранный день")
 
     # Check user-level overlap: prevent booking multiple desks at the same time
     user_conflicts = (
@@ -459,6 +479,8 @@ def create_reservation(db: Session, payload: schemas.ReservationCreate) -> model
                 payload.start_time, payload.end_time, res.start_time, res.end_time
             ):
                 raise ValueError("Вы уже забронировали другое место на это время.")
+        else:
+            raise ValueError("Вы уже забронировали другое место на этот день.")
 
     reservation = models.Reservation(
         desk_id=payload.desk_id,
@@ -504,14 +526,14 @@ def create_reservations_batch(
         except ValueError:
             # Conflict (overlap, policy violation, fixed-desk mismatch, etc.)
             skipped.append(reservation_date)
-            # Roll back the failed transaction so the session is usable for the next iteration
-            db.rollback()
+            # expire_all resets session state without rolling back already-committed reservations
+            db.expire_all()
         except KeyError as exc:
             # Desk not found — not a per-date issue, propagate immediately
             raise exc
         except Exception as exc:
             errors.append(f"{reservation_date}: {exc}")
-            db.rollback()
+            db.expire_all()
 
     return schemas.ReservationBatchResult(
         created=created,
@@ -601,52 +623,85 @@ def delete_policy(db: Session, policy_id: int) -> None:
 # Analytics
 # ---------------------------------------------------------------------------
 
-def get_analytics(db: Session) -> dict:
-    today = date.today()
+def _trend_pct(current: int, previous: int) -> Optional[float]:
+    if previous == 0:
+        return None
+    return round((current - previous) / previous * 100, 1)
 
-    # Total active reservations for today
-    total_today = (
-        db.query(func.count(models.Reservation.id))
-        .filter(
-            models.Reservation.reservation_date == today,
-            models.Reservation.status == "active",
+
+def get_analytics(db: Session, period: str = "day") -> dict:
+    today = _today_app()
+
+    # ── Date ranges for current and previous period ──────────────────────────
+    if period == "week":
+        span = timedelta(days=6)
+    elif period == "month":
+        span = timedelta(days=29)
+    else:  # day
+        span = timedelta(days=0)
+
+    cur_end   = today
+    cur_start = today - span
+    prev_end  = cur_start - timedelta(days=1)
+    prev_start = prev_end - span
+
+    def _count_bookings(start: date, end: date, status: str) -> int:
+        return (
+            db.query(func.count(models.Reservation.id))
+            .filter(
+                models.Reservation.reservation_date >= start,
+                models.Reservation.reservation_date <= end,
+                models.Reservation.status == status,
+            )
+            .scalar()
+            or 0
         )
-        .scalar()
-        or 0
-    )
 
-    # Total active / cancelled (all time)
-    total_active = (
+    def _noshow(start: date, end: date) -> tuple[int, int]:
+        total = (
+            db.query(func.count(models.Reservation.id))
+            .filter(
+                models.Reservation.reservation_date >= start,
+                models.Reservation.reservation_date <= end,
+            )
+            .scalar()
+            or 0
+        )
+        noshows = (
+            db.query(func.count(models.Reservation.id))
+            .filter(
+                models.Reservation.reservation_date >= start,
+                models.Reservation.reservation_date <= end,
+                models.Reservation.status == "cancelled",
+                models.Reservation.checked_in_at.is_(None),
+            )
+            .scalar()
+            or 0
+        )
+        return noshows, total
+
+    # Current period
+    total_today     = _count_bookings(cur_start, cur_end, "active")
+    total_cancelled = _count_bookings(cur_start, cur_end, "cancelled")
+    total_active    = (
         db.query(func.count(models.Reservation.id))
         .filter(models.Reservation.status == "active")
         .scalar()
         or 0
     )
-    total_cancelled = (
-        db.query(func.count(models.Reservation.id))
-        .filter(models.Reservation.status == "cancelled")
-        .scalar()
-        or 0
-    )
+    cur_noshow, cur_total = _noshow(cur_start, cur_end)
+    noshow_rate = round(cur_noshow / cur_total * 100, 1) if cur_total > 0 else 0.0
 
-    # No-show rate: cancelled without check-in / all past reservations
-    past_total = (
-        db.query(func.count(models.Reservation.id))
-        .filter(models.Reservation.reservation_date < today)
-        .scalar()
-        or 0
-    )
-    past_noshow = (
-        db.query(func.count(models.Reservation.id))
-        .filter(
-            models.Reservation.reservation_date < today,
-            models.Reservation.status == "cancelled",
-            models.Reservation.checked_in_at.is_(None),
-        )
-        .scalar()
-        or 0
-    )
-    noshow_rate = round(past_noshow / past_total * 100, 1) if past_total > 0 else 0.0
+    # Previous period (for trends)
+    prev_bookings   = _count_bookings(prev_start, prev_end, "active")
+    prev_cancelled  = _count_bookings(prev_start, prev_end, "cancelled")
+    prev_noshow, prev_total_ns = _noshow(prev_start, prev_end)
+    prev_noshow_rate = round(prev_noshow / prev_total_ns * 100, 1) if prev_total_ns > 0 else 0.0
+
+    trend_today     = _trend_pct(total_today, prev_bookings)
+    trend_active    = _trend_pct(total_today, prev_bookings)   # same metric
+    trend_cancelled = _trend_pct(total_cancelled, prev_cancelled)
+    trend_noshow    = _trend_pct(int(noshow_rate * 10), int(prev_noshow_rate * 10))
 
     # Occupancy by office
     offices = db.query(models.Office).all()
@@ -738,6 +793,11 @@ def get_analytics(db: Session) -> dict:
         "occupancy_by_office": occupancy_by_office,
         "top_desks": top_desks,
         "top_users": top_users,
+        "trend_today": trend_today,
+        "trend_active": trend_active,
+        "trend_cancelled": trend_cancelled,
+        "trend_noshow": trend_noshow,
+        "period": period,
     }
 
 
@@ -753,24 +813,111 @@ def get_user_by_email(db: Session, email: str) -> Optional[models.User]:
     return db.query(models.User).filter(models.User.email == email).first()
 
 
+def get_user_location(db: Session, username: str) -> dict:
+    """Return today's office location for `username` plus last visit date."""
+    today = _today_app()
+    location = None
+    resv = (
+        db.query(models.Reservation)
+        .filter(
+            models.Reservation.user_id == username,
+            models.Reservation.reservation_date == today,
+            models.Reservation.status == "active",
+        )
+        .first()
+    )
+    if resv:
+        desk = db.query(models.Desk).filter_by(id=resv.desk_id).first()
+        if desk:
+            floor = db.query(models.Floor).filter_by(id=desk.floor_id).first()
+            office = db.query(models.Office).filter_by(id=floor.office_id).first() if floor else None
+            location = {
+                "desk_id": desk.id,
+                "desk_label": desk.label,
+                "floor_id": floor.id if floor else None,
+                "floor_name": floor.name if floor else None,
+                "office_id": office.id if office else None,
+                "office_name": office.name if office else None,
+            }
+
+    # Last office visit date (most recent past active reservation)
+    last_visit = (
+        db.query(models.Reservation.reservation_date)
+        .filter(
+            models.Reservation.user_id == username,
+            models.Reservation.reservation_date < today,
+            models.Reservation.status == "active",
+        )
+        .order_by(models.Reservation.reservation_date.desc())
+        .first()
+    )
+    last_office_date = last_visit[0].isoformat() if last_visit else None
+
+    return {
+        "in_office_today": location is not None,
+        "location": location,
+        "last_office_date": last_office_date,
+    }
+
+
 def get_users(db: Session) -> list[models.User]:
     return db.query(models.User).order_by(models.User.id).all()
 
 
-def get_team(db: Session, username: str) -> list[models.User]:
-    """Return users sharing the same non-null department as username, excluding self."""
+def get_team(db: Session, username: str) -> list[dict]:
+    """Return team members with today's office location if booked."""
     user = db.query(models.User).filter_by(username=username).first()
     if not user or not user.department:
         return []
-    return (
+    members = (
         db.query(models.User)
         .filter(
             models.User.department == user.department,
             models.User.username != username,
+            models.User.is_active == True,
         )
         .order_by(models.User.full_name)
         .all()
     )
+    today = _today_app()
+    result = []
+    for m in members:
+        location = None
+        resv = (
+            db.query(models.Reservation)
+            .filter(
+                models.Reservation.user_id == m.username,
+                models.Reservation.reservation_date == today,
+                models.Reservation.status == "active",
+            )
+            .first()
+        )
+        if resv:
+            desk = db.query(models.Desk).filter_by(id=resv.desk_id).first()
+            if desk:
+                floor = db.query(models.Floor).filter_by(id=desk.floor_id).first()
+                office = db.query(models.Office).filter_by(id=floor.office_id).first() if floor else None
+                location = {
+                    "desk_id": desk.id,
+                    "desk_label": desk.label,
+                    "floor_id": floor.id if floor else None,
+                    "floor_name": floor.name if floor else None,
+                    "office_id": office.id if office else None,
+                    "office_name": office.name if office else None,
+                }
+        result.append({
+            "id": m.id,
+            "username": m.username,
+            "full_name": m.full_name,
+            "department": m.department,
+            "position": m.position,
+            "phone": m.phone,
+            "user_status": m.user_status,
+            "is_active": m.is_active,
+            "avatar_url": getattr(m, "avatar_url", None),
+            "location": location,
+        })
+    return result
 
 
 def update_user_profile(
@@ -862,6 +1009,16 @@ def delete_department(db: Session, dept_id: int) -> None:
         raise ValueError("not_found")
     db.delete(dept)
     db.commit()
+
+
+def update_department(db: Session, dept_id: int, name: str) -> models.Department:
+    dept = db.query(models.Department).filter_by(id=dept_id).first()
+    if not dept:
+        raise KeyError("not_found")
+    dept.name = name.strip()
+    db.commit()
+    db.refresh(dept)
+    return dept
 
 
 # ---------------------------------------------------------------------------

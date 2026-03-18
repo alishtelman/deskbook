@@ -68,7 +68,6 @@
           <div class="quick-date-chips" id="quick-date-chips">
             <button type="button" class="quick-date-chip active" id="quick-date-today">Сегодня</button>
             <button type="button" class="quick-date-chip" id="quick-date-tomorrow">Завтра</button>
-            <button type="button" class="quick-date-chip" id="quick-date-custom">Дата</button>
           </div>
         </div>
         <input id="user-id" type="hidden">
@@ -103,22 +102,18 @@
             <h2 class="card-title"><i data-lucide="map" style="width:16px;height:16px"></i> План этажа</h2>
           </div>
           <div id="map-legend" class="map-legend" style="display:none"></div>
-          <div class="map-status-legend">
-            <span class="legend-item"><span class="legend-dot status-available"></span>Свободно</span>
-            <span class="legend-item"><span class="legend-dot status-mine"></span>Моё</span>
-            <span class="legend-item"><span class="legend-dot status-occupied"></span>Занято</span>
-            <span class="legend-item"><span class="legend-dot status-blocked"></span>Недоступно</span>
-          </div>
-          <div id="time-window-indicator" class="time-window-indicator">Просмотр: —</div>
-          <div id="space-filter-bar" class="filter-chip-row" style="display:none"></div>
-          <div class="search-bar" id="colleague-search-bar">
-            <div class="search-input-wrap">
-              <i data-lucide="search" style="width:14px;height:14px;color:var(--text-3)"></i>
-              <input id="colleague-search" type="text" placeholder="Найти коллегу..." autocomplete="off">
-              <button id="colleague-search-clear" class="search-clear-btn" style="display:none" title="Очистить">✕</button>
+          <!-- Row 1: status legend + time window in one bar -->
+          <div class="map-info-row">
+            <div class="map-status-legend">
+              <span class="legend-item"><span class="legend-dot status-available"></span>Свободно</span>
+              <span class="legend-item"><span class="legend-dot status-mine"></span>Моё</span>
+              <span class="legend-item"><span class="legend-dot status-occupied"></span>Занято</span>
+              <span class="legend-item"><span class="legend-dot status-blocked"></span>Недоступно</span>
             </div>
-            <div id="search-dropdown" class="search-dropdown" style="display:none"></div>
+            <div id="time-window-indicator" class="time-window-indicator">Просмотр: —</div>
           </div>
+          <!-- Row 2: space filters -->
+          <div id="space-filter-bar" class="filter-chip-row" style="display:none"></div>
           <div class="map-zoom-wrapper" id="map-zoom-wrapper">
             <div class="map-controls" id="map-controls" style="display:none">
               <button class="map-ctrl-btn" id="zoom-in-btn" title="Увеличить" aria-label="Увеличить карту">+</button>
@@ -127,6 +122,13 @@
               <button class="map-ctrl-btn" id="fit-reset-btn" title="Вписать целиком" aria-label="Вписать карту целиком">FIT</button>
               <button class="map-ctrl-btn" id="fit-height-btn" title="По высоте" aria-label="Подогнать карту по высоте">H</button>
               <span class="zoom-indicator" id="zoom-indicator">100%</span>
+            </div>
+            <div id="minimap-wrap" style="display:none">
+              <svg id="minimap-svg" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+                <rect id="minimap-bg" fill="#f0f4f8"/>
+                <g id="minimap-content" pointer-events="none"></g>
+                <rect id="minimap-viewport" rx="0" fill="rgba(37,99,235,0.10)" stroke="#2563eb" stroke-width="20" stroke-opacity="0.8"/>
+              </svg>
             </div>
             <div class="map-zoom-content" id="map-zoom-content">
               <div id="map-image-frame">
@@ -145,12 +147,23 @@
 
         <!-- Desk detail (shown when desk is selected) -->
         <div class="card desk-detail-card" id="desk-detail-card">
-          <div id="desk-detail-empty" class="desk-detail-empty">Выберите место на карте или найдите коллегу</div>
+          <div id="desk-detail-empty" class="desk-detail-empty">
+            <i data-lucide="mouse-pointer-click" style="width:18px;height:18px;opacity:.4"></i>
+            <span>Нажмите на место на карте, чтобы посмотреть информацию или забронировать стол.</span>
+          </div>
           <div id="desk-detail-content"></div>
         </div>
 
         <!-- Tabs: На этаже / Мои брони -->
         <div class="panel-card">
+          <div class="search-bar panel-search-bar" id="colleague-search-bar">
+            <div class="search-input-wrap">
+              <i data-lucide="search" style="width:14px;height:14px;color:var(--text-3)"></i>
+              <input id="colleague-search" type="text" placeholder="Найти коллегу..." autocomplete="off">
+              <button id="colleague-search-clear" class="search-clear-btn" style="display:none" title="Очистить">✕</button>
+            </div>
+            <div id="search-dropdown" class="search-dropdown" style="display:none"></div>
+          </div>
           <div class="panel-tabs">
             <button class="panel-tab-btn active" data-tab="floor">
               <i data-lucide="users" style="width:13px;height:13px"></i>

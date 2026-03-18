@@ -14,7 +14,7 @@ const STRUCT_COLORS = {
   wall:      '#2f343b',
   boundary:  '#1d4ed8',
   partition: '#4b5563',
-  door:      '#1f2937',
+  door:      '#c2410c',   // orange-700 — visually distinct from gray walls/partitions
 };
 const DEFAULT_ZONE_COLOR = STRUCT_COLORS.boundary;
 const STRUCT_OPACITY = { wall: 1, boundary: 0.15, partition: 0.7, door: 1 };
@@ -23,7 +23,22 @@ const PX_CLOSE_THRESHOLD = 14;
 const MARQUEE_MIN_PX = 4;
 const OBJECT_HIT_PX = 14;
 const DEFAULT_ZONE_LABEL_SIZE = 18;
+const DEFAULT_ZONE_OPACITY    = 0.15;
+const DEFAULT_ZONE_TYPE       = 'open_space';
+const ZONE_TYPES = ['open_space','meeting_room','kitchen','reception','corridor','custom'];
+const ZONE_TYPE_LABELS = {
+  open_space:   'Open Space',
+  meeting_room: 'Переговорная',
+  kitchen:      'Кухня',
+  reception:    'Ресепшн',
+  corridor:     'Коридор',
+  custom:       'Произвольная',
+};
 const DRAW_ANGLE_STEP_DEG = 45;
+const DOOR_WIDTH = 50;          // SVG units for door segment length
+const ENDPOINT_SNAP_PX = 12;   // screen px radius for endpoint snap
+const DOOR_SNAP_PX = 22;       // screen px radius to snap click onto wall for door
+const OBJECT_SNAP_PX = 9;      // screen px threshold for snap-to-objects/walls
 const PANEL_LEFT_KEY = 'editor_left_collapsed';
 const PANEL_RIGHT_KEY = 'editor_right_collapsed';
 
@@ -35,19 +50,104 @@ const DESK_COLORS = {
 };
 
 const MODE_HINTS = {
-  select:    'Клик — выбор; Shift+клик/рамка — мультивыбор объектов; тащи — перемещение; круглая ручка — поворот; Q/E — шаг поворота; Пробел+тащи — рука',
-  pan:       'Тащи для панорамирования; колесо — зум',
-  wall:      'Клик — добавить точку; Shift — угол 45°; Enter/двойной клик — завершить; Esc — отменить',
-  boundary:  'Клик — точка; Shift — угол 45°; клик рядом с первой — замкнуть; Enter — замкнуть; Esc — отменить',
-  partition: 'Клик — точка; Shift — угол 45°; Enter — завершить; Esc — отменить',
-  door:      'Клик — точка; Shift — угол 45°; Enter/двойной клик — завершить; Esc — отменить',
-  desk:      'Клик — поставить стол; для блока выберите "Блок" в панели ниже',
+  select:    'Клик — выбор · Shift+клик/рамка — мультивыбор · тащи — перемещение · круглая ручка — поворот · Q/E — шаг поворота · Пробел+тащи — рука',
+  pan:       'Тащи для панорамирования · колесо — зум',
+  // Line tools — idle state (no drawing in progress)
+  wall:      'Кликните, чтобы начать стену · Shift — угол 45° · Esc — выйти',
+  partition: 'Кликните, чтобы начать перегородку · Shift — угол 45° · Esc — выйти',
+  // Area tool — idle state (no drag in progress)
+  boundary:  'Тащите мышью, чтобы нарисовать прямоугольную зону · Esc — выйти',
+  // Object tools — handled dynamically in updateStatusBar
+  door:      'Наведите на стену и кликните · R — сменить направление · Esc — выйти',
+  desk:      'Кликните, чтобы поставить стол · для блока выберите «Блок» в панели ниже · Esc — выйти',
 };
 const STRUCT_TYPES = ['wall', 'boundary', 'partition', 'door'];
+// Interaction model classification
+const LINE_TOOLS  = ['wall', 'partition'];   // click-click segment drawing, Enter to finish
+const AREA_TOOLS  = ['boundary'];            // drag-to-rectangle
+const OBJECT_TOOLS = ['door', 'desk'];       // hover preview + click to place, no accumulation
 
 /* ── State ──────────────────────────────────────────────────────────────────── */
 let ld = null;        // LayoutDocument (canonical)
 let ed = resetEd();
+
+/* ── Undo / Redo ─────────────────────────────────────────────────────────────
+ *  Snapshot-based: we clone the mutable arrays of ld before any mutation.
+ *  histSnapshot()  — instant actions (create, delete, property change, etc.)
+ *  histPushSnap()  — drag-end: caller captures pre-drag state and pushes only
+ *                    if the drag actually moved something.
+ * ────────────────────────────────────────────────────────────────────────── */
+const HIST_MAX = 60;
+let _histUndo = [];
+let _histRedo = [];
+
+function _snapLd() {
+  if (!ld) return null;
+  return JSON.parse(JSON.stringify({
+    desks:       ld.desks,
+    walls:       ld.walls,
+    boundaries:  ld.boundaries,
+    partitions:  ld.partitions,
+    doors:       ld.doors,
+  }));
+}
+
+function histPushSnap(snap) {
+  if (!snap) return;
+  _histUndo.push(snap);
+  if (_histUndo.length > HIST_MAX) _histUndo.shift();
+  _histRedo = [];
+  _updateHistBtns();
+}
+
+function histSnapshot() {
+  histPushSnap(_snapLd());
+}
+
+function histUndo() {
+  if (!_histUndo.length) return;
+  _histRedo.push(_snapLd());
+  if (_histRedo.length > HIST_MAX) _histRedo.shift();
+  _histApply(_histUndo.pop());
+}
+
+function histRedo() {
+  if (!_histRedo.length) return;
+  _histUndo.push(_snapLd());
+  if (_histUndo.length > HIST_MAX) _histUndo.shift();
+  _histApply(_histRedo.pop());
+}
+
+function _histApply(snap) {
+  if (!ld || !snap) return;
+  ld.desks       = snap.desks;
+  ld.walls       = snap.walls;
+  ld.boundaries  = snap.boundaries;
+  ld.partitions  = snap.partitions;
+  ld.doors       = snap.doors;
+  // Clear selection — the previously-selected object may no longer exist
+  ed.selType = null; ed.selId = null;
+  ed.multiDeskIds = []; ed.multiStructKeys = [];
+  markDirty();
+  renderAll();
+  renderObjectList();
+  showPropsFor(null, null);
+  _updateHistBtns();
+}
+
+function histReset() {
+  _histUndo = [];
+  _histRedo = [];
+  _updateHistBtns();
+}
+
+function _updateHistBtns() {
+  const u = document.getElementById('ed-undo-btn');
+  const r = document.getElementById('ed-redo-btn');
+  if (u) { u.disabled = _histUndo.length === 0; u.title = `Отменить (Ctrl+Z)${_histUndo.length ? ' · ' + _histUndo.length : ''}`; }
+  if (r) { r.disabled = _histRedo.length === 0; r.title = `Вернуть (Ctrl+Shift+Z)${_histRedo.length ? ' · ' + _histRedo.length : ''}`; }
+}
+/* ─────────────────────────────────────────────────────────────────────────── */
 
 function resetEd() {
   return {
@@ -73,23 +173,38 @@ function resetEd() {
     mode: 'select',
     snapGrid: false,
     gridSize: 10,
+    snapToObjects: true,   // snap to other desks' edges/centers
+    snapToWalls: true,     // snap to wall/partition vertices
+    snapGuides: [],        // active guide lines [{type:'v'|'h', pos}]
     altSnapOff: false,
     shiftFine: false,
     shiftDown: false,
     deskTool: {
-      placeMode: 'single', // single | block
-      pattern: 'rows',     // rows | double
-      axis: 'horizontal',  // horizontal | vertical
+      placeMode: 'single',   // single | row | block
+      axis: 'horizontal',    // horizontal | vertical
       deskW: null,
       deskH: null,
-      seatsPerRow: 6,
-      rowCount: 2,
-      pairCount: 1,
-      preview: null,       // transient preview for block placement
+      colCount: 6,           // desks in primary direction
+      rowCount: 2,           // rows perpendicular (block mode only)
+      deskGap: null,         // gap between desks in px (null = auto: w*0.22)
+      rowGap: null,          // gap between rows in px (null = auto: h*0.8)
+      groupLabel: '',        // optional label for batch insert
+      preview: null,         // float preview { anchor, desks, conflicts, overflow, _cursorPt }
+      // Autonumbering
+      numScheme: 'D-N',   // 'D-N' | 'A-N' | 'N' | 'Rm-N' | 'custom'
+      numPrefix: '',      // custom prefix (only when numScheme === 'custom')
+      numStart:  null,    // null = auto-detect next available, or integer
     },
 
-    // Drawing (wall/boundary/partition)
-    drawing: null,   // { type, pts: [[x,y],...], rubberPt: [x,y] }
+    // Drawing (wall/partition)
+    drawing: null,       // { type, pts: [[x,y],...], rubberPt: [x,y] }
+
+    // Boundary drag-to-rect
+    boundaryDrag: null,  // { pointerId, start:[x,y], current:[x,y] }
+
+    // Door tool
+    doorFlip: false,
+    doorPreview: null,   // { proj:[x,y], angle:number }
 
     // Selection
     selType: null,   // 'desk' | 'wall' | 'boundary' | 'partition' | 'door'
@@ -174,7 +289,8 @@ function snapV(v) {
 }
 
 function isDrawMode(mode = ed.mode) {
-  return ['wall', 'boundary', 'partition', 'door'].includes(mode);
+  // Only line tools use point-accumulation drawing; area/object tools excluded
+  return LINE_TOOLS.includes(mode);
 }
 
 function _toXYPoint(pt) {
@@ -188,6 +304,12 @@ function _toXYPoint(pt) {
 function getConstrainedDrawPoint(basePt, pointerPt, opts = {}) {
   const ptr = _toXYPoint(pointerPt);
   if (!ptr) return [0, 0];
+
+  // Endpoint snap takes priority over grid/angle snap
+  if (!opts.skipEndpointSnap) {
+    const ep = snapToEndpoints(ptr);
+    if (ep) return ep;
+  }
 
   const angleLock = !!opts.angleLock;
   if (!angleLock) return [snapV(ptr.x), snapV(ptr.y)];
@@ -232,6 +354,151 @@ function worldUnitsForScreenPx(px) {
   const rect = svg.getBoundingClientRect();
   if (!rect.width) return px;
   return px * (ed.vb.w / rect.width);
+}
+
+/* ── Endpoint snap (wall/partition drawing) ─────────────────────────────────── */
+function snapToEndpoints(ptr) {
+  if (!ld) return null;
+  const threshold = worldUnitsForScreenPx(ENDPOINT_SNAP_PX);
+  let best = null, bestDist = threshold;
+  const check = (arr) => {
+    for (const el of (arr || [])) {
+      for (const ep of (el.pts || [])) {
+        const d = Math.hypot(ptr.x - ep[0], ptr.y - ep[1]);
+        if (d < bestDist) { bestDist = d; best = ep; }
+      }
+    }
+  };
+  check(ld.walls);
+  check(ld.partitions);
+  return best; // [x, y] or null
+}
+
+/* ── Smart snap (objects + walls) ───────────────────────────────────────────── */
+/**
+ * Computes snapped position for a rect being dragged, checking:
+ *  1. Object snap: aligns rect edges/center to other desks' edges/centers
+ *  2. Wall snap: aligns rect edges to wall/partition vertex coordinates
+ *  3. Grid snap: fallback if object snap doesn't fire
+ * Returns { x, y, guides: [{type:'v'|'h', pos}] }
+ */
+function computeSnapForRect(rawX, rawY, w, h, excludeIds) {
+  const guides = [];
+  if (ed.altSnapOff || (!ed.snapToObjects && !ed.snapToWalls)) {
+    return { x: snapV(rawX), y: snapV(rawY), guides };
+  }
+
+  const threshold = worldUnitsForScreenPx(OBJECT_SNAP_PX);
+  const excludeSet = new Set(excludeIds || []);
+
+  // Candidate snap values: left / center-x / right of moving rect
+  const testX = [rawX, rawX + w / 2, rawX + w];
+  const testY = [rawY, rawY + h / 2, rawY + h];
+
+  let bestX = null; // { delta, snapTo }
+  let bestY = null;
+
+  function tryX(tgt) {
+    for (const tx of testX) {
+      const d = Math.abs(tx - tgt);
+      if (d < threshold && (!bestX || d < Math.abs(bestX.delta))) {
+        bestX = { delta: tgt - tx, snapTo: tgt };
+      }
+    }
+  }
+  function tryY(tgt) {
+    for (const ty of testY) {
+      const d = Math.abs(ty - tgt);
+      if (d < threshold && (!bestY || d < Math.abs(bestY.delta))) {
+        bestY = { delta: tgt - ty, snapTo: tgt };
+      }
+    }
+  }
+
+  if (ed.snapToObjects) {
+    for (const d of (ld?.desks || [])) {
+      if (excludeSet.has(d.id)) continue;
+      tryX(d.x); tryX(d.x + d.w / 2); tryX(d.x + d.w);
+      tryY(d.y); tryY(d.y + d.h / 2); tryY(d.y + d.h);
+    }
+    for (const b of (ld?.boundaries || [])) {
+      const bounds = pointsBounds(b.pts);
+      if (!bounds) continue;
+      tryX(bounds.minX); tryX(bounds.cx); tryX(bounds.maxX);
+      tryY(bounds.minY); tryY(bounds.cy); tryY(bounds.maxY);
+    }
+  }
+
+  if (ed.snapToWalls) {
+    for (const el of [...(ld?.walls || []), ...(ld?.partitions || [])]) {
+      for (const pt of el.pts || []) {
+        tryX(pt[0]); tryY(pt[1]);
+      }
+    }
+  }
+
+  // Compare with grid snap, take whichever is tighter per axis
+  const gridX = snapV(rawX);
+  const gridY = snapV(rawY);
+  const gridDx = Math.abs(gridX - rawX);
+  const gridDy = Math.abs(gridY - rawY);
+
+  let finalX, finalY;
+  if (bestX !== null && Math.abs(bestX.delta) <= gridDx) {
+    finalX = rawX + bestX.delta;
+    guides.push({ type: 'v', pos: bestX.snapTo });
+  } else {
+    finalX = gridX;
+  }
+  if (bestY !== null && Math.abs(bestY.delta) <= gridDy) {
+    finalY = rawY + bestY.delta;
+    guides.push({ type: 'h', pos: bestY.snapTo });
+  } else {
+    finalY = gridY;
+  }
+  return { x: finalX, y: finalY, guides };
+}
+
+/* ── Door helpers ────────────────────────────────────────────────────────────── */
+function findNearestWallSegment(pt) {
+  if (!ld) return null;
+  const threshold = worldUnitsForScreenPx(DOOR_SNAP_PX);
+  let best = null, bestDist = threshold;
+  const check = (arr, type) => {
+    for (const el of (arr || [])) {
+      const pts = el.pts || [];
+      for (let i = 0; i < pts.length - 1; i++) {
+        const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
+        const ddx = bx - ax, ddy = by - ay;
+        const len2 = ddx * ddx + ddy * ddy;
+        if (len2 < 1e-9) continue;
+        let t = ((pt.x - ax) * ddx + (pt.y - ay) * ddy) / len2;
+        t = Math.max(0, Math.min(1, t));
+        const px = ax + t * ddx, py = ay + t * ddy;
+        const d = Math.hypot(pt.x - px, pt.y - py);
+        if (d < bestDist) {
+          bestDist = d;
+          best = { el, type, segIdx: i, proj: [px, py], angle: Math.atan2(ddy, ddx) };
+        }
+      }
+    }
+  };
+  check(ld.walls, 'wall');
+  check(ld.partitions, 'partition');
+  return best;
+}
+
+function doorPtsFromWall(proj, wallAngle, flip) {
+  const half = DOOR_WIDTH / 2;
+  const dir = flip ? -1 : 1;
+  return [
+    [snapV(proj[0] - Math.cos(wallAngle) * half * dir), snapV(proj[1] - Math.sin(wallAngle) * half * dir)],
+    [snapV(proj[0] + Math.cos(wallAngle) * half * dir), snapV(proj[1] + Math.sin(wallAngle) * half * dir)],
+  ];
+}
+
+function isNewDoor(d) {
+  return !!(d && d.type === 'door' && Number.isFinite(d.cx));
 }
 
 function layoutStrokeScale(vbWidth) {
@@ -280,6 +547,109 @@ function takeNextDeskLabel(used) {
   return 'D-' + n;
 }
 
+/* ── Desk autonumbering engine ───────────────────────────────────────────────
+ *  Schemes: 'D-N' → D-1, 'A-N' → A-1, 'N' → 1, 'Rm-N' → Rm-1, 'custom'
+ * ────────────────────────────────────────────────────────────────────────── */
+/** Returns a function (n: int) → label string for the given scheme. */
+function _numFmt(scheme, prefix) {
+  if (scheme === 'N') return n => String(n);
+  if (scheme === 'custom') {
+    const pfx = (prefix || '').trim() || 'D';
+    return n => `${pfx}-${n}`;
+  }
+  const pfx = scheme.replace(/-N$/i, '');
+  return n => `${pfx}-${n}`;
+}
+
+/** Returns a RegExp matching labels for this scheme; capture group 1 = number. */
+function _numRe(scheme, prefix) {
+  if (scheme === 'N') return /^(\d+)$/;
+  const pfx = scheme === 'custom'
+    ? ((prefix || '').trim() || 'D')
+    : scheme.replace(/-N$/i, '');
+  const esc = pfx.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${esc}-(\\d+)$`, 'i');
+}
+
+/** Collect the set of numbers already occupied for a numbering scheme. */
+function collectUsedForScheme(scheme, prefix) {
+  const re = _numRe(scheme, prefix);
+  const used = new Set();
+  for (const d of (ld?.desks || [])) {
+    const m = re.exec(String(d.label || '').trim());
+    if (m) used.add(parseInt(m[1], 10));
+  }
+  return used;
+}
+
+/** Find the next available integer for this scheme (skipping occupied numbers). */
+function nextAutoStart(scheme, prefix) {
+  const used = collectUsedForScheme(scheme, prefix);
+  let n = 1;
+  while (used.has(n)) n++;
+  return n;
+}
+
+/**
+ * Generate `count` sequential labels.
+ * If `start` is null  → auto-detect next available number (gaps skipped).
+ * If `start` is given → start from that exact number (may overwrite existing).
+ */
+function generateSequentialLabels(count, scheme, prefix, start) {
+  const fmt = _numFmt(scheme, prefix);
+  const hasExplicitStart = (start !== null && Number.isFinite(Number(start)) && Number(start) >= 1);
+
+  if (hasExplicitStart) {
+    // Explicit start: simple consecutive sequence (user accepts potential overwrites)
+    const n0 = Math.round(Number(start));
+    return Array.from({ length: count }, (_, i) => fmt(n0 + i));
+  }
+
+  // Auto-detect: skip numbers already in use to avoid duplicates
+  const used = collectUsedForScheme(scheme, prefix);
+  const labels = [];
+  let n = 1;
+  while (labels.length < count) {
+    if (!used.has(n)) {
+      labels.push(fmt(n));
+      used.add(n); // reserve within this batch too
+    }
+    n++;
+  }
+  return labels;
+}
+
+/**
+ * Renumber selected desks spatially (left→right, top→bottom).
+ * Uses current deskTool numbering settings.
+ */
+function renumberSelected() {
+  if (!ld) return;
+  const desks = selectedDeskRecords({ includePrimary: true })
+    .filter(d => !isDeskLocked(d));
+  if (desks.length === 0) {
+    edToast('Нет редактируемых мест для перенумерации', 'info');
+    return;
+  }
+  // Sort spatially: band by Y (±half avg height), then X within band
+  const avgH = desks.reduce((s, d) => s + d.h, 0) / desks.length;
+  const band = Math.max(1, avgH * 0.6);
+  desks.sort((a, b) => {
+    const ra = Math.round(a.y / band), rb = Math.round(b.y / band);
+    return ra !== rb ? ra - rb : a.x - b.x;
+  });
+  histSnapshot();
+  const { numScheme: scheme, numPrefix: prefix, numStart: start } = ed.deskTool;
+  const labels = generateSequentialLabels(desks.length, scheme, prefix, start);
+  desks.forEach((d, i) => { d.label = labels[i]; });
+  markDirty();
+  renderDesks();
+  renderObjectList();
+  if (ed.selType === 'desk' && ed.selId) showPropsFor('desk', ed.selId);
+  edToast(`Перенумеровано: ${desks.length} мест`, 'success');
+}
+/* ─────────────────────────────────────────────────────────────────────────── */
+
 function baseDeskSize() {
   if (!ld) return { w: 28, h: 16 };
   const w = Math.max(8, ld.vb[2] * 0.028);
@@ -297,11 +667,13 @@ function defaultDeskSize() {
   };
 }
 
-function makeDeskRecord(rect, label) {
+function makeDeskRecord(rect, label, groupId = null, groupLabel = null) {
   return {
     id: uid(), label, name: null, team: null, dept: null,
     bookable: true, fixed: false, assigned_to: null, status: 'available',
     x: rect.x, y: rect.y, w: rect.w, h: rect.h, r: 0, locked: false,
+    group_id: groupId || null,
+    group_label: groupLabel || null,
   };
 }
 
@@ -312,6 +684,9 @@ function rectsOverlap(a, b) {
 
 function isDeskBlockMode() {
   return ed.mode === 'desk' && ed.deskTool.placeMode === 'block';
+}
+function isDeskMultiMode() {
+  return ed.mode === 'desk' && (ed.deskTool.placeMode === 'row' || ed.deskTool.placeMode === 'block');
 }
 
 function syncDeskBulkControls() {
@@ -325,50 +700,67 @@ function syncDeskBulkControls() {
   const maxH = Math.max(90, baseSize.h * 8);
   ed.deskTool.deskW = clampNum(ed.deskTool.deskW, 4, maxW, baseSize.w);
   ed.deskTool.deskH = clampNum(ed.deskTool.deskH, 4, maxH, baseSize.h);
-  ed.deskTool.seatsPerRow = clampInt(ed.deskTool.seatsPerRow, 1, 100, 6);
+  ed.deskTool.colCount = clampInt(ed.deskTool.colCount, 1, 100, 6);
   ed.deskTool.rowCount = clampInt(ed.deskTool.rowCount, 1, 50, 2);
-  ed.deskTool.pairCount = clampInt(ed.deskTool.pairCount, 1, 25, 1);
-  if (!['single', 'block'].includes(ed.deskTool.placeMode)) ed.deskTool.placeMode = 'single';
-  if (!['rows', 'double'].includes(ed.deskTool.pattern)) ed.deskTool.pattern = 'rows';
+  if (!['single', 'row', 'block'].includes(ed.deskTool.placeMode)) ed.deskTool.placeMode = 'single';
   if (!['horizontal', 'vertical'].includes(ed.deskTool.axis)) ed.deskTool.axis = 'horizontal';
 
   _v('ed-desk-place-mode', ed.deskTool.placeMode);
-  _v('ed-desk-block-pattern', ed.deskTool.pattern);
   _v('ed-desk-block-axis', ed.deskTool.axis);
-  _v('ed-desk-width', Math.round(ed.deskTool.deskW * 10) / 10);
-  _v('ed-desk-height', Math.round(ed.deskTool.deskH * 10) / 10);
-  _v('ed-desk-seats-per-row', ed.deskTool.seatsPerRow);
-  _v('ed-desk-row-count', ed.deskTool.rowCount);
-  _v('ed-desk-pair-count', ed.deskTool.pairCount);
+  _vIfNotFocused('ed-desk-width', Math.round(ed.deskTool.deskW * 10) / 10);
+  _vIfNotFocused('ed-desk-height', Math.round(ed.deskTool.deskH * 10) / 10);
+  _vIfNotFocused('ed-desk-col-count', ed.deskTool.colCount);
+  _vIfNotFocused('ed-desk-row-count', ed.deskTool.rowCount);
+  if (ed.deskTool.deskGap !== null) _v('ed-desk-gap', ed.deskTool.deskGap);
+  if (ed.deskTool.rowGap !== null) _v('ed-desk-row-gap', ed.deskTool.rowGap);
+  _v('ed-desk-group-label', ed.deskTool.groupLabel || '');
 
-  $el('ed-desk-rows-field')?.classList.toggle('ed-hidden', ed.deskTool.pattern !== 'rows');
-  $el('ed-desk-pairs-field')?.classList.toggle('ed-hidden', ed.deskTool.pattern !== 'double');
+  // Numbering controls
+  const validSchemes = ['D-N', 'A-N', 'N', 'Rm-N', 'custom'];
+  if (!validSchemes.includes(ed.deskTool.numScheme)) ed.deskTool.numScheme = 'D-N';
+  _v('ed-desk-num-scheme', ed.deskTool.numScheme);
+  _v('ed-desk-num-prefix', ed.deskTool.numPrefix || '');
+  if (ed.deskTool.numStart !== null) _v('ed-desk-num-start', ed.deskTool.numStart);
+  else { const el = $el('ed-desk-num-start'); if (el) el.value = ''; }
+  $el('ed-desk-num-prefix-field')?.classList.toggle('ed-hidden', ed.deskTool.numScheme !== 'custom');
+
+  const isMulti = isDeskMultiMode();
+  const isBlock = isDeskBlockMode();
+  $el('ed-desk-col-count-field')?.classList.toggle('ed-hidden', !isMulti);
+  $el('ed-desk-row-count-field')?.classList.toggle('ed-hidden', !isBlock);
+  $el('ed-desk-gap-field')?.classList.toggle('ed-hidden', !isMulti);
+  $el('ed-desk-row-gap-field')?.classList.toggle('ed-hidden', !isBlock);
+  $el('ed-desk-group-label-field')?.classList.toggle('ed-hidden', !isMulti);
 
   const note = $el('ed-desk-bulk-note');
   if (note) {
-    const sizeNote = `(${Math.round(ed.deskTool.deskW)}×${Math.round(ed.deskTool.deskH)})`;
+    const { w, h } = defaultDeskSize();
+    const sizeNote = `(${Math.round(w)}×${Math.round(h)})`;
     if (ed.deskTool.placeMode === 'single') {
-      note.textContent = `Одиночный режим: клик по холсту ставит одно место ${sizeNote}`;
-    } else if (ed.deskTool.preview?.awaitConfirm) {
-      note.textContent = `Превью готово: клик по холсту подтвердит вставку, Esc — отменит ${sizeNote}`;
+      note.textContent = `Одиночный режим: клик ставит одно место ${sizeNote}`;
     } else {
-      note.textContent = `Режим блока: выберите ориентацию, drag задает направление, затем клик для подтверждения ${sizeNote}`;
+      const cols = ed.deskTool.colCount;
+      const rows = isBlock ? ed.deskTool.rowCount : 1;
+      const total = cols * rows;
+      note.textContent = `${isBlock ? 'Блок' : 'Ряд'} ${cols}×${rows} (${total} мест) — наведите курсор, клик ставит · R — повернуть`;
     }
   }
 
+  const preview = ed.deskTool.preview;
   const conflictEl = $el('ed-desk-bulk-conflicts');
   if (conflictEl) {
     conflictEl.classList.remove('ok');
-    const preview = ed.deskTool.preview;
-    if (ed.deskTool.placeMode !== 'block' || !preview) {
+    if (!isMulti || !preview) {
       conflictEl.textContent = '';
     } else if (preview.overflow) {
       conflictEl.textContent = `Превышение лимита: максимум ${MAX_LAYOUT_DESKS} мест`;
     } else if (preview.conflicts > 0) {
       conflictEl.textContent = `Конфликтов: ${preview.conflicts}`;
-    } else {
+    } else if (preview.desks?.length) {
       conflictEl.textContent = `Без конфликтов (${preview.desks.length})`;
       conflictEl.classList.add('ok');
+    } else {
+      conflictEl.textContent = '';
     }
   }
 }
@@ -602,6 +994,15 @@ function zoneLabelAnchorPoint(el, fontSize) {
   if (pos === 'left') return { x: bounds.minX + margin, y: bounds.cy };
   if (pos === 'right') return { x: bounds.maxX - margin, y: bounds.cy };
   return { x: bounds.cx, y: bounds.cy };
+}
+
+function normalizeZoneType(value) {
+  return ZONE_TYPES.includes(value) ? value : DEFAULT_ZONE_TYPE;
+}
+
+function boundaryFillOpacity(el) {
+  const v = Number(el?.opacity);
+  return Number.isFinite(v) && v >= 0.05 && v <= 1 ? v : DEFAULT_ZONE_OPACITY;
 }
 
 function getCanvasRect() {
@@ -886,6 +1287,10 @@ function structSelectionBounds(keys) {
 }
 
 function structIntersectsRect(el, x1, y1, x2, y2) {
+  if (isNewDoor(el)) {
+    const r = (el.width || DOOR_WIDTH) * 0.6;
+    return el.cx + r > x1 && el.cx - r < x2 && el.cy + r > y1 && el.cy - r < y2;
+  }
   let sx1 = Infinity;
   let sy1 = Infinity;
   let sx2 = -Infinity;
@@ -993,6 +1398,17 @@ function findNearestObjectAtPoint(pt, thresholdPx = OBJECT_HIT_PX) {
   scanStruct(ld.walls, 'wall');
   scanStruct(ld.partitions, 'partition');
   scanStruct(ld.doors, 'door');
+
+  // New-style doors (no pts, use center distance)
+  for (const door of (ld.doors || [])) {
+    if (!isNewDoor(door)) continue;
+    const d = Math.hypot(pt.x - door.cx, pt.y - door.cy);
+    if (d <= threshold && d < bestDist) {
+      bestDist = d;
+      best = { type: 'door', id: door.id };
+    }
+  }
+
   return best;
 }
 
@@ -1231,7 +1647,7 @@ function renderStructure() {
 
       if (type === 'boundary') {
         shape.setAttribute('fill', el.closed === false ? 'none' : col);
-        shape.setAttribute('fill-opacity', '0.12');
+        shape.setAttribute('fill-opacity', String(boundaryFillOpacity(el)));
         shape.setAttribute('stroke', col);
       } else {
         shape.setAttribute('fill', 'none');
@@ -1289,10 +1705,162 @@ function renderStructure() {
     }
   }
 
+  function drawDoorsNew(doors, doorLayer) {
+    if (!doorLayer) return;
+    // Minimum screen-pixel sizes so door stays readable at any zoom
+    const px1  = worldUnitsForScreenPx(1);
+    const vbSw = layoutStrokeWidth('door', 2.2, strokeScaleVb);
+    // Stroke sizes guaranteed to be ≥ N screen pixels
+    const leafSw  = Math.max(px1 * 3,   vbSw * 2.2);  // thick panel — primary element
+    const arcSw   = Math.max(px1 * 1.5, vbSw * 1.0);  // arc — secondary
+    const jambSw  = Math.max(px1 * 1.5, vbSw * 1.0);  // jamb ticks
+    const gapSw   = Math.max(px1 * 10,  vbSw * 5.5);  // gap must cover the wall
+
+    for (const door of doors) {
+      const w     = door.width || DOOR_WIDTH;
+      const cosA  = Math.cos(door.angle);
+      const sinA  = Math.sin(door.angle);
+      const perp  = door.flip ? [sinA, -cosA] : [-sinA, cosA];
+      const hx = door.cx - cosA * w / 2,  hy = door.cy - sinA * w / 2;  // hinge
+      const fx = door.cx + cosA * w / 2,  fy = door.cy + sinA * w / 2;  // free jamb
+      const lx = hx + perp[0] * w,        ly = hy + perp[1] * w;        // leaf-open pos
+
+      const isSel    = ed.selType === 'door' && ed.selId === door.id;
+      const isLocked = isStructLocked(door);
+      const doorCol  = isSel ? '#2563eb' : '#c2410c';   // blue when selected, orange otherwise
+      const sweepFlag = door.flip ? 0 : 1;
+      const jambLen  = Math.max(px1 * 6, w * 0.16);    // length of jamb tick
+
+      const g = document.createElementNS(NS, 'g');
+      g.dataset.id = door.id;
+      g.dataset.type = 'door';
+
+      /* ─ 1. Gap fill: erase the wall line behind the opening ──────────────── */
+      const gap = document.createElementNS(NS, 'line');
+      gap.setAttribute('x1', String(hx)); gap.setAttribute('y1', String(hy));
+      gap.setAttribute('x2', String(fx)); gap.setAttribute('y2', String(fy));
+      gap.setAttribute('stroke', '#ffffff');             // white gap — cleanly breaks the wall line
+      gap.setAttribute('stroke-width', String(gapSw));
+      gap.setAttribute('stroke-linecap', 'butt');
+      gap.setAttribute('pointer-events', 'none');
+      g.appendChild(gap);
+
+      /* ─ 2. Swing zone: filled quarter-pie sector ─────────────────────────── */
+      // Path: hinge → free → arc → leafOpen → back to hinge
+      const sectorD = `M ${hx},${hy} L ${fx},${fy} A ${w},${w} 0 0 ${sweepFlag} ${lx},${ly} Z`;
+      const sector = document.createElementNS(NS, 'path');
+      sector.setAttribute('d', sectorD);
+      sector.setAttribute('fill', isSel ? 'rgba(37,99,235,0.12)' : 'rgba(194,65,12,0.10)');
+      sector.setAttribute('stroke', 'none');
+      sector.setAttribute('pointer-events', 'none');
+      g.appendChild(sector);
+
+      /* ─ 3. Swing arc (solid, secondary thickness) ────────────────────────── */
+      const arc = document.createElementNS(NS, 'path');
+      arc.setAttribute('d', `M ${fx},${fy} A ${w},${w} 0 0 ${sweepFlag} ${lx},${ly}`);
+      arc.setAttribute('fill', 'none');
+      arc.setAttribute('stroke', doorCol);
+      arc.setAttribute('stroke-width', String(arcSw));
+      arc.setAttribute('stroke-linecap', 'round');
+      arc.setAttribute('opacity', '0.75');
+      arc.setAttribute('pointer-events', 'none');
+      g.appendChild(arc);
+
+      /* ─ 4. Door leaf: thick solid panel (primary visual) ─────────────────── */
+      const leaf = document.createElementNS(NS, 'line');
+      leaf.setAttribute('x1', String(hx)); leaf.setAttribute('y1', String(hy));
+      leaf.setAttribute('x2', String(lx)); leaf.setAttribute('y2', String(ly));
+      leaf.setAttribute('stroke', doorCol);
+      leaf.setAttribute('stroke-width', String(leafSw));
+      leaf.setAttribute('stroke-linecap', 'round');
+      leaf.setAttribute('pointer-events', 'none');
+      g.appendChild(leaf);
+
+      /* ─ 5. Jamb marks: short perpendicular lines at opening edges ─────────── */
+      // Extend from wall-interior side (−perp * 0.3) to swing side (+perp * 0.7)
+      [[hx, hy], [fx, fy]].forEach(([jx, jy]) => {
+        const jt = document.createElementNS(NS, 'line');
+        jt.setAttribute('x1', String(jx - perp[0] * jambLen * 0.3));
+        jt.setAttribute('y1', String(jy - perp[1] * jambLen * 0.3));
+        jt.setAttribute('x2', String(jx + perp[0] * jambLen * 0.7));
+        jt.setAttribute('y2', String(jy + perp[1] * jambLen * 0.7));
+        jt.setAttribute('stroke', doorCol);
+        jt.setAttribute('stroke-width', String(jambSw * 1.3));
+        jt.setAttribute('stroke-linecap', 'square');
+        jt.setAttribute('pointer-events', 'none');
+        g.appendChild(jt);
+      });
+
+      /* ─ 6. Hinge pivot dot ───────────────────────────────────────────────── */
+      const hingeR = Math.max(px1 * 2.5, w * 0.05);
+      const hinge = document.createElementNS(NS, 'circle');
+      hinge.setAttribute('cx', String(hx)); hinge.setAttribute('cy', String(hy));
+      hinge.setAttribute('r', String(hingeR));
+      hinge.setAttribute('fill', doorCol);
+      hinge.setAttribute('stroke', '#fff');
+      hinge.setAttribute('stroke-width', String(Math.max(px1, w * 0.015)));
+      hinge.setAttribute('pointer-events', 'none');
+      g.appendChild(hinge);
+
+      /* ─ 7. Hit area ──────────────────────────────────────────────────────── */
+      const hitRadius = Math.max(worldUnitsForScreenPx(OBJECT_HIT_PX), w * 0.7);
+      const hitShape = document.createElementNS(NS, 'circle');
+      hitShape.setAttribute('cx', String(door.cx)); hitShape.setAttribute('cy', String(door.cy));
+      hitShape.setAttribute('r', String(hitRadius));
+      hitShape.setAttribute('fill', 'rgba(0,0,0,0)');
+      hitShape.setAttribute('stroke', 'none');
+      hitShape.setAttribute('pointer-events', 'all');
+      hitShape.setAttribute('cursor', isLocked ? 'not-allowed' : (ed.mode === 'select' ? 'pointer' : 'default'));
+      hitShape.addEventListener('pointerdown', ev => onStructPointerDown(ev, 'door', door.id));
+      g.appendChild(hitShape);
+
+      /* ─ 8. Selected state: rotated bounding box + hinge handle ──────────── */
+      if (isSel) {
+        // Rotated bounding quad aligned to the door geometry
+        const m = w * 0.12;
+        // 4 corners in door-local space (origin = door center, x = wall dir, y = swing dir)
+        const localCorners = [
+          [-w / 2 - m, -m],
+          [ w / 2 + m, -m],
+          [ w / 2 + m,  w + m],
+          [-w / 2 - m,  w + m],
+        ];
+        const worldPts = localCorners.map(([lc, ls]) => [
+          door.cx + lc * cosA + ls * perp[0],
+          door.cy + lc * sinA + ls * perp[1],
+        ]);
+        const selBox = document.createElementNS(NS, 'polygon');
+        selBox.setAttribute('points', worldPts.map(([wx, wy]) => `${wx},${wy}`).join(' '));
+        selBox.setAttribute('fill', 'rgba(37,99,235,0.05)');
+        selBox.setAttribute('stroke', '#2563eb');
+        selBox.setAttribute('stroke-width', String(Math.max(px1 * 1.5, vbSw * 0.6)));
+        selBox.setAttribute('stroke-dasharray', `${px1 * 5} ${px1 * 3}`);
+        selBox.setAttribute('stroke-linejoin', 'round');
+        selBox.setAttribute('pointer-events', 'none');
+        g.appendChild(selBox);
+
+        // Hinge handle (larger, white ring)
+        const hingeHandle = document.createElementNS(NS, 'circle');
+        hingeHandle.setAttribute('cx', String(hx)); hingeHandle.setAttribute('cy', String(hy));
+        hingeHandle.setAttribute('r', String(Math.max(px1 * 4, w * 0.08)));
+        hingeHandle.setAttribute('fill', '#2563eb');
+        hingeHandle.setAttribute('stroke', '#fff');
+        hingeHandle.setAttribute('stroke-width', String(Math.max(px1 * 1.5, vbSw * 0.7)));
+        hingeHandle.setAttribute('pointer-events', 'none');
+        g.appendChild(hingeHandle);
+      }
+
+      doorLayer.appendChild(g);
+    }
+  }
+
   drawElements(ld.walls,      'wall');
   drawElements(ld.boundaries, 'boundary');
   drawElements(ld.partitions, 'partition');
-  drawElements(ld.doors || [], 'door');
+  const legacyDoors = (ld.doors || []).filter(d => !isNewDoor(d));
+  const archDoors   = (ld.doors || []).filter(isNewDoor);
+  if (legacyDoors.length) drawElements(legacyDoors, 'door');
+  if (archDoors.length)   drawDoorsNew(archDoors, layers.door);
 }
 
 function renderDesks() {
@@ -1432,6 +2000,40 @@ function renderSelection() {
     }
   }
 
+  // Boundary resize handles — 8 handles aligned to bounding box
+  if (ed.selType === 'boundary' && ed.selId) {
+    const el = (ld.boundaries || []).find(b => b.id === ed.selId);
+    if (el && !isStructLocked(el)) {
+      const bounds = pointsBounds(el.pts);
+      if (bounds) {
+        const handles = [
+          [bounds.minX, bounds.minY],
+          [bounds.cx,   bounds.minY],
+          [bounds.maxX, bounds.minY],
+          [bounds.maxX, bounds.cy  ],
+          [bounds.maxX, bounds.maxY],
+          [bounds.cx,   bounds.maxY],
+          [bounds.minX, bounds.maxY],
+          [bounds.minX, bounds.cy  ],
+        ];
+        const cursors = ['nw-resize','n-resize','ne-resize','e-resize','se-resize','s-resize','sw-resize','w-resize'];
+        handles.forEach(([hx, hy], i) => {
+          const circle = document.createElementNS(NS, 'circle');
+          circle.setAttribute('cx', String(hx));
+          circle.setAttribute('cy', String(hy));
+          circle.setAttribute('r', String(r));
+          circle.setAttribute('fill', '#fff');
+          circle.setAttribute('stroke', '#1d4ed8');
+          circle.setAttribute('stroke-width', '1.5');
+          circle.setAttribute('cursor', cursors[i]);
+          circle.setAttribute('pointer-events', 'all');
+          circle.addEventListener('pointerdown', ev => onBoundaryResizeHandleDown(ev, el, i));
+          layer.appendChild(circle);
+        });
+      }
+    }
+  }
+
   if (hasMultiDeskSelection()) {
     const box = deskSelectionBounds(ed.multiDeskIds);
     if (box) {
@@ -1516,6 +2118,28 @@ function renderSelection() {
     rect.setAttribute('pointer-events', 'none');
     layer.appendChild(rect);
   }
+
+  // Snap guide lines
+  for (const guide of (ed.snapGuides || [])) {
+    const sw = Math.max(0.6, ed.vb.w * 0.0007);
+    const line = document.createElementNS(NS, 'line');
+    if (guide.type === 'v') {
+      line.setAttribute('x1', String(guide.pos));
+      line.setAttribute('y1', String(ed.vb.y - 5000));
+      line.setAttribute('x2', String(guide.pos));
+      line.setAttribute('y2', String(ed.vb.y + ed.vb.h + 5000));
+    } else {
+      line.setAttribute('x1', String(ed.vb.x - 5000));
+      line.setAttribute('y1', String(guide.pos));
+      line.setAttribute('x2', String(ed.vb.x + ed.vb.w + 5000));
+      line.setAttribute('y2', String(guide.pos));
+    }
+    line.setAttribute('stroke', '#06b6d4');
+    line.setAttribute('stroke-width', String(sw));
+    line.setAttribute('stroke-dasharray', `${sw * 5} ${sw * 3}`);
+    line.setAttribute('pointer-events', 'none');
+    layer.appendChild(line);
+  }
 }
 
 function renderDrawing() {
@@ -1523,7 +2147,7 @@ function renderDrawing() {
   if (!layer) return;
   layer.innerHTML = '';
 
-  if (isDeskBlockMode() && ed.deskTool.preview?.desks?.length) {
+  if (isDeskMultiMode() && ed.deskTool.preview?.desks?.length) {
     for (const rectData of ed.deskTool.preview.desks) {
       const rect = document.createElementNS(NS, 'rect');
       rect.setAttribute('x', rectData.x);
@@ -1538,6 +2162,107 @@ function renderDrawing() {
       rect.setAttribute('stroke-dasharray', '5 2');
       layer.appendChild(rect);
     }
+    return;
+  }
+
+  // Boundary drag-to-rect preview
+  if (ed.boundaryDrag) {
+    const [x1, y1] = ed.boundaryDrag.start;
+    const [x2, y2] = ed.boundaryDrag.current;
+    const rect = document.createElementNS(NS, 'rect');
+    rect.setAttribute('x', String(Math.min(x1, x2)));
+    rect.setAttribute('y', String(Math.min(y1, y2)));
+    rect.setAttribute('width', String(Math.abs(x2 - x1)));
+    rect.setAttribute('height', String(Math.abs(y2 - y1)));
+    rect.setAttribute('fill', STRUCT_COLORS.boundary);
+    rect.setAttribute('fill-opacity', '0.12');
+    rect.setAttribute('stroke', STRUCT_COLORS.boundary);
+    rect.setAttribute('stroke-width', String(Math.max(1, ed.vb.w * 0.002)));
+    rect.setAttribute('stroke-dasharray', '6 3');
+    layer.appendChild(rect);
+    return;
+  }
+
+  // Door preview — matches placed door visual exactly (slightly dimmed + green snap dot)
+  if (ed.mode === 'door' && ed.doorPreview) {
+    const { proj, angle } = ed.doorPreview;
+    const w = DOOR_WIDTH;
+    const cosA = Math.cos(angle), sinA = Math.sin(angle);
+    const perp = ed.doorFlip ? [sinA, -cosA] : [-sinA, cosA];
+    const hx = proj[0] - cosA * w / 2, hy = proj[1] - sinA * w / 2;
+    const fx = proj[0] + cosA * w / 2, fy = proj[1] + sinA * w / 2;
+    const lx = hx + perp[0] * w, ly = hy + perp[1] * w;
+    const px1 = worldUnitsForScreenPx(1);
+    const leafSw = Math.max(px1 * 3,   ed.vb.w * 0.0025 * 2.2);
+    const arcSw  = Math.max(px1 * 1.5, ed.vb.w * 0.0025);
+    const gapSw  = Math.max(px1 * 10,  ed.vb.w * 0.0025 * 5.5);
+    const col = '#c2410c';
+    const sweepFlag = ed.doorFlip ? 0 : 1;
+    const jambLen = Math.max(px1 * 6, w * 0.16);
+
+    // gap
+    const gap = document.createElementNS(NS, 'line');
+    gap.setAttribute('x1', hx); gap.setAttribute('y1', hy);
+    gap.setAttribute('x2', fx); gap.setAttribute('y2', fy);
+    gap.setAttribute('stroke', '#ffffff'); gap.setAttribute('stroke-width', String(gapSw));
+    gap.setAttribute('stroke-linecap', 'butt'); gap.setAttribute('opacity', '0.85');
+    gap.setAttribute('pointer-events', 'none');
+    layer.appendChild(gap);
+
+    // sector fill
+    const sector = document.createElementNS(NS, 'path');
+    sector.setAttribute('d', `M ${hx},${hy} L ${fx},${fy} A ${w},${w} 0 0 ${sweepFlag} ${lx},${ly} Z`);
+    sector.setAttribute('fill', 'rgba(194,65,12,0.12)');
+    sector.setAttribute('stroke', 'none'); sector.setAttribute('pointer-events', 'none');
+    layer.appendChild(sector);
+
+    // arc
+    const arc = document.createElementNS(NS, 'path');
+    arc.setAttribute('d', `M ${fx},${fy} A ${w},${w} 0 0 ${sweepFlag} ${lx},${ly}`);
+    arc.setAttribute('fill', 'none'); arc.setAttribute('stroke', col);
+    arc.setAttribute('stroke-width', String(arcSw));
+    arc.setAttribute('stroke-linecap', 'round'); arc.setAttribute('opacity', '0.75');
+    arc.setAttribute('pointer-events', 'none');
+    layer.appendChild(arc);
+
+    // leaf
+    const leaf = document.createElementNS(NS, 'line');
+    leaf.setAttribute('x1', hx); leaf.setAttribute('y1', hy);
+    leaf.setAttribute('x2', lx); leaf.setAttribute('y2', ly);
+    leaf.setAttribute('stroke', col); leaf.setAttribute('stroke-width', String(leafSw));
+    leaf.setAttribute('stroke-linecap', 'round'); leaf.setAttribute('pointer-events', 'none');
+    layer.appendChild(leaf);
+
+    // jamb marks
+    [[hx, hy], [fx, fy]].forEach(([jx, jy]) => {
+      const jt = document.createElementNS(NS, 'line');
+      jt.setAttribute('x1', String(jx - perp[0] * jambLen * 0.3));
+      jt.setAttribute('y1', String(jy - perp[1] * jambLen * 0.3));
+      jt.setAttribute('x2', String(jx + perp[0] * jambLen * 0.7));
+      jt.setAttribute('y2', String(jy + perp[1] * jambLen * 0.7));
+      jt.setAttribute('stroke', col); jt.setAttribute('stroke-width', String(arcSw * 1.3));
+      jt.setAttribute('stroke-linecap', 'square'); jt.setAttribute('pointer-events', 'none');
+      layer.appendChild(jt);
+    });
+
+    // hinge dot
+    const hingeR = Math.max(px1 * 2.5, w * 0.05);
+    const hinge = document.createElementNS(NS, 'circle');
+    hinge.setAttribute('cx', hx); hinge.setAttribute('cy', hy);
+    hinge.setAttribute('r', String(hingeR));
+    hinge.setAttribute('fill', col); hinge.setAttribute('stroke', '#fff');
+    hinge.setAttribute('stroke-width', String(Math.max(px1, w * 0.015)));
+    hinge.setAttribute('pointer-events', 'none');
+    layer.appendChild(hinge);
+
+    // green snap indicator (center)
+    const dot = document.createElementNS(NS, 'circle');
+    dot.setAttribute('cx', proj[0]); dot.setAttribute('cy', proj[1]);
+    dot.setAttribute('r', String(Math.max(px1 * 3, w * 0.04)));
+    dot.setAttribute('fill', '#22c55e'); dot.setAttribute('stroke', '#fff');
+    dot.setAttribute('stroke-width', String(Math.max(px1, w * 0.012)));
+    dot.setAttribute('pointer-events', 'none');
+    layer.appendChild(dot);
     return;
   }
 
@@ -1655,18 +2380,35 @@ function updateStatusBar() {
   if (hintEl) {
     if (ed.bgAdjust.active) {
       hintEl.textContent = 'Правка фона: drag — сдвиг, колесо — масштаб, кнопка "Правка фона" — выход';
-    } else if (isDeskBlockMode()) {
-      hintEl.textContent = 'Клик + drag — превью блока; клик — подтвердить; Esc — отменить';
+    } else if (isDeskMultiMode()) {
+      hintEl.textContent = 'Наведите курсор — появится превью · Клик — вставить · R — повернуть · Esc — отменить';
+    } else if (ed.mode === 'desk') {
+      hintEl.textContent = 'Клик — поставить одно место · D — переключить режим';
+    } else if (LINE_TOOLS.includes(ed.mode) && ed.drawing) {
+      // Line tool: in-progress state — show point count and completion keys
+      const ptCount = ed.drawing.pts?.length || 0;
+      const noun = ptCount === 1 ? 'точка' : 'точек';
+      hintEl.textContent = `${ptCount} ${noun} · Shift — угол 45° · Enter / двойной клик — завершить · Esc — отменить`;
+    } else if (ed.mode === 'boundary' && ed.boundaryDrag) {
+      // Area tool: drag in progress
+      hintEl.textContent = 'Тащите для задания прямоугольника зоны · Esc — отменить';
+    } else if (ed.mode === 'door') {
+      // Object tool: hover-to-snap, click-to-place
+      hintEl.textContent = ed.doorPreview
+        ? `Кликните, чтобы вставить дверь · R — сменить сторону (${ed.doorFlip ? '←' : '→'})`
+        : 'Наведите на стену или перегородку · R — сменить направление · Esc — выйти';
     } else {
       hintEl.textContent = MODE_HINTS[ed.mode] || '';
     }
   }
   if (precEl) {
     const flags = [];
-    if (ed.altSnapOff && ed.snapGrid) flags.push('NO SNAP');
+    if (ed.altSnapOff && (ed.snapGrid || ed.snapToObjects || ed.snapToWalls)) flags.push('NO SNAP');
+    if (!ed.altSnapOff && ed.snapToObjects) flags.push('⊟OBJ');
+    if (!ed.altSnapOff && ed.snapToWalls)   flags.push('⊣WALL');
     if (ed.shiftDown && isDrawMode(ed.mode)) flags.push(`ANGLE ${DRAW_ANGLE_STEP_DEG}°`);
     else if (ed.shiftFine) flags.push('FINE');
-    precEl.textContent = flags.join(' · ');
+    precEl.textContent = flags.join(' ');
   }
   if (zoomEl && ld) {
     const pct = Math.round(ld.vb[2] / ed.vb.w * 100);
@@ -1678,7 +2420,48 @@ function modeLabel(m) {
   return { select:'Выбор', pan:'Рука', wall:'Стена', boundary:'Граница', partition:'Перегородка', door:'Дверь', desk:'Стол' }[m] || m;
 }
 
-/* ── Object list ────────────────────────────────────────────────────────────── */
+/* ── Object list helpers ────────────────────────────────────────────────────── */
+function polylineLength(pts) {
+  if (!pts || pts.length < 2) return 0;
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) {
+    total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  }
+  return Math.round(total);
+}
+
+function deskStatusMeta(desk) {
+  if (desk.fixed && desk.assigned_to) return { text: `фикс. · ${desk.assigned_to}`, cls: 'meta-fixed' };
+  if (desk.fixed) return { text: 'фикс.', cls: 'meta-fixed' };
+  if (desk.status === 'disabled') return { text: 'откл.', cls: 'meta-off' };
+  if (desk.status === 'occupied') return { text: 'занято', cls: 'meta-occ' };
+  return { text: 'своб.', cls: 'meta-free' };
+}
+
+// SVG icon definitions (12×10 px viewbox)
+const INV_ICON = {
+  desk:      `<svg viewBox="0 0 13 10" width="13" height="10" aria-hidden="true"><rect x="0.5" y="0.5" width="12" height="9" rx="1.5" fill="currentColor" opacity=".18"/><rect x="0.5" y="0.5" width="12" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>`,
+  desk_fixed:`<svg viewBox="0 0 13 10" width="13" height="10" aria-hidden="true"><rect x="0.5" y="0.5" width="12" height="9" rx="1.5" fill="currentColor" opacity=".35"/><rect x="0.5" y="0.5" width="12" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="4" y1="5" x2="9" y2="5" stroke="currentColor" stroke-width="1.2"/></svg>`,
+  wall:      `<svg viewBox="0 0 14 6" width="14" height="6" aria-hidden="true"><rect x="0" y="1.5" width="14" height="3" rx="1" fill="currentColor"/></svg>`,
+  partition: `<svg viewBox="0 0 14 6" width="14" height="6" aria-hidden="true"><rect x="0" y="1.5" width="14" height="3" rx="1" fill="currentColor" opacity=".55"/><line x1="0" y1="3" x2="14" y2="3" stroke="currentColor" stroke-width="1" stroke-dasharray="3 2"/></svg>`,
+  door:      `<svg viewBox="0 0 10 12" width="10" height="12" aria-hidden="true"><rect x="0.5" y="0.5" width="9" height="11" rx="1" fill="currentColor" opacity=".15"/><rect x="0.5" y="0.5" width="9" height="11" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5 11 Q5 4 9 2" fill="none" stroke="currentColor" stroke-width="1"/></svg>`,
+  zone:      `<svg viewBox="0 0 14 10" width="14" height="10" aria-hidden="true"><rect x="0.5" y="0.5" width="13" height="9" rx="1" fill="currentColor" opacity=".25"/><rect x="0.5" y="0.5" width="13" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="3 2"/></svg>`,
+};
+
+function doorInventoryLabel(door, idx) {
+  if (!isNewDoor(door)) {
+    // Legacy pts-based door
+    return door.label || `Дверь (${door.pts?.length ?? '?'} pts)`;
+  }
+  const num = idx + 1;
+  const w = Math.round(door.width || DOOR_WIDTH);
+  const dir = door.flip ? '←' : '→';
+  const wallRef = door.wallId
+    ? (door.wallType === 'wall' ? ' · стена' : door.wallType === 'partition' ? ' · пер.' : '')
+    : '';
+  return `Дверь #${num} · ${w} ед · ${dir}${wallRef}`;
+}
+
 function renderObjectList() {
   const list = $el('ed-obj-list');
   if (!list) return;
@@ -1686,35 +2469,160 @@ function renderObjectList() {
 
   const q = ($el('ed-obj-search')?.value || '').toLowerCase();
 
-  function makeSection(title, items, type, colorFn) {
-    if (!items.length) return '';
-    const filtered = items.filter(it =>
-      !q || (it.label || it.pts?.length?.toString() || '').toLowerCase().includes(q)
-    );
-    if (!filtered.length) return '';
-    let html = `<div class="ed-obj-section-header">${title} (${filtered.length})</div>`;
-    for (const it of filtered) {
-      let active = false;
-      if (type === 'desk') active = isDeskSelected(it.id);
-      else active = isStructSelected(type, it.id);
-      const lbl = it.label || `${title.slice(0,-1)} (${it.pts?.length || '?'} pts)`;
-      const color = colorFn(it);
-      const lockBadge = it.locked ? '<span class="ed-obj-lock" title="Закреплён">L</span>' : '';
-      html += `<div class="ed-obj-item${active?' active':''}" data-id="${it.id}" data-type="${type}">
-        <span class="ed-obj-dot" style="background:${color}"></span>
-        <span class="ed-obj-label" title="${lbl}">${lbl}</span>
-        ${lockBadge}
+  // ── Item builder ─────────────────────────────────────────────────────────
+  function item(type, id, name, meta, iconHtml, iconColor, active, locked, extraClass = '') {
+    const lock = locked ? '<span class="ed-obj-lock" title="Закреплён">L</span>' : '';
+    return `<div class="ed-obj-item${active ? ' active' : ''}${extraClass ? ' ' + extraClass : ''}" data-id="${id}" data-type="${type}">
+      <span class="ed-obj-icon" style="color:${iconColor}">${iconHtml}</span>
+      <span class="ed-obj-body">
+        <span class="ed-obj-name">${name}</span>${meta ? `<span class="ed-obj-meta">${meta}</span>` : ''}
+      </span>${lock}
+    </div>`;
+  }
+
+  function sectionHeader(title, count) {
+    return count ? `<div class="ed-obj-section-header">${title}<span class="ed-obj-section-count">${count}</span></div>` : '';
+  }
+
+  // ── Desks ─────────────────────────────────────────────────────────────────
+  function makeDeskSection(desks) {
+    const groups = {};
+    const ungrouped = [];
+    for (const d of desks) {
+      if (d.group_id) (groups[d.group_id] = groups[d.group_id] || []).push(d);
+      else ungrouped.push(d);
+    }
+
+    function matchDesk(d) {
+      if (!q) return true;
+      return (d.label || '').toLowerCase().includes(q)
+        || (d.name || '').toLowerCase().includes(q)
+        || (d.group_label || '').toLowerCase().includes(q);
+    }
+
+    const visibleUngrouped = ungrouped.filter(matchDesk);
+    const visibleGroups = Object.entries(groups).filter(([, gd]) => gd.some(matchDesk));
+    const total = visibleUngrouped.length + visibleGroups.reduce((s, [, gd]) => s + gd.filter(matchDesk).length, 0);
+    if (!total) return '';
+
+    let html = sectionHeader('Места', total);
+
+    for (const [gid, gDesks] of visibleGroups) {
+      const filteredG = gDesks.filter(matchDesk);
+      if (!filteredG.length) continue;
+      const groupLabel = gDesks[0]?.group_label || `Группа`;
+      html += `<div class="ed-obj-group-header" data-group-id="${gid}">
+        <span class="ed-obj-group-icon">⊞</span>
+        <span class="ed-obj-group-label">${groupLabel}</span>
+        <span class="ed-obj-group-count">${filteredG.length} мест</span>
+        <button class="ed-obj-ungroup-btn" data-group-id="${gid}" title="Разгруппировать">✕</button>
       </div>`;
+      for (const d of filteredG) {
+        const sm = deskStatusMeta(d);
+        const iconKey = d.fixed ? 'desk_fixed' : 'desk';
+        const color = d.fixed ? '#d97706' : '#2563eb';
+        html += item('desk', d.id, d.label, `<span class="inv-status ${sm.cls}">${sm.text}</span>`,
+          INV_ICON[iconKey], color, isDeskSelected(d.id), d.locked, 'ed-obj-item-grouped');
+      }
+    }
+    for (const d of visibleUngrouped) {
+      const sm = deskStatusMeta(d);
+      const iconKey = d.fixed ? 'desk_fixed' : 'desk';
+      const color = d.fixed ? '#d97706' : '#2563eb';
+      html += item('desk', d.id, d.label, `<span class="inv-status ${sm.cls}">${sm.text}</span>`,
+        INV_ICON[iconKey], color, isDeskSelected(d.id), d.locked);
+    }
+    return html;
+  }
+
+  // ── Walls ─────────────────────────────────────────────────────────────────
+  function makeWallSection(walls) {
+    const entries = walls.map((w, i) => {
+      const len = polylineLength(w.pts);
+      const segs = (w.pts?.length ?? 1) - 1;
+      const name = w.label || `Стена #${i + 1}`;
+      const meta = len ? (segs > 1 ? `дл. ${len} · ${segs} сег.` : `дл. ${len}`) : '';
+      const searchText = name + ' ' + meta;
+      return { w, name, meta, searchText };
+    }).filter(({ searchText }) => !q || searchText.toLowerCase().includes(q));
+    if (!entries.length) return '';
+    let html = sectionHeader('Стены', entries.length);
+    for (const { w, name, meta } of entries) {
+      html += item('wall', w.id, name, meta, INV_ICON.wall, STRUCT_COLORS.wall, isStructSelected('wall', w.id), w.locked);
+    }
+    return html;
+  }
+
+  // ── Partitions ────────────────────────────────────────────────────────────
+  function makePartitionSection(partitions) {
+    const entries = partitions.map((p, i) => {
+      const len = polylineLength(p.pts);
+      const segs = (p.pts?.length ?? 1) - 1;
+      const name = p.label || `Перегородка #${i + 1}`;
+      const meta = len ? (segs > 1 ? `дл. ${len} · ${segs} сег.` : `дл. ${len}`) : '';
+      const searchText = name + ' ' + meta;
+      return { p, name, meta, searchText };
+    }).filter(({ searchText }) => !q || searchText.toLowerCase().includes(q));
+    if (!entries.length) return '';
+    let html = sectionHeader('Перегородки', entries.length);
+    for (const { p, name, meta } of entries) {
+      html += item('partition', p.id, name, meta, INV_ICON.partition, STRUCT_COLORS.partition,
+        isStructSelected('partition', p.id), p.locked);
+    }
+    return html;
+  }
+
+  // ── Doors ─────────────────────────────────────────────────────────────────
+  function makeDoorSection(doors) {
+    const entries = doors.map((door, i) => {
+      let name, meta;
+      if (isNewDoor(door)) {
+        name = door.label || `Дверь #${i + 1}`;
+        const w = Math.round(door.width || DOOR_WIDTH);
+        const wall = door.wallType === 'wall' ? 'стена' : door.wallType === 'partition' ? 'пер.' : '';
+        meta = [w ? `${w} ед.` : '', wall].filter(Boolean).join(' · ');
+      } else {
+        name = door.label || `Дверь #${i + 1}`;
+        meta = '';
+      }
+      return { door, name, meta, searchText: name + ' ' + meta };
+    }).filter(({ searchText }) => !q || searchText.toLowerCase().includes(q));
+    if (!entries.length) return '';
+    let html = sectionHeader('Двери', entries.length);
+    for (const { door, name, meta } of entries) {
+      html += item('door', door.id, name, meta, INV_ICON.door, STRUCT_COLORS.door,
+        isStructSelected('door', door.id), door.locked);
+    }
+    return html;
+  }
+
+  // ── Zones / Boundaries ────────────────────────────────────────────────────
+  function makeBoundarySection(boundaries) {
+    const entries = boundaries.map((b, i) => {
+      const bounds = pointsBounds(b.pts);
+      const w = bounds ? Math.round(bounds.w) : null;
+      const h = bounds ? Math.round(bounds.h) : null;
+      const typeLabel = ZONE_TYPE_LABELS[normalizeZoneType(b.zone_type)] || 'Зона';
+      const name = b.label || `Зона #${i + 1}`;
+      const meta = [typeLabel, w && h ? `${w}×${h}` : ''].filter(Boolean).join(' · ');
+      return { b, name, meta, searchText: name + ' ' + meta };
+    }).filter(({ searchText }) => !q || searchText.toLowerCase().includes(q));
+    if (!entries.length) return '';
+    let html = sectionHeader('Зоны', entries.length);
+    for (const { b, name, meta } of entries) {
+      const color = normalizeHexColor(b.color, DEFAULT_ZONE_COLOR);
+      html += item('boundary', b.id, name, meta, INV_ICON.zone, color,
+        isStructSelected('boundary', b.id), b.locked);
     }
     return html;
   }
 
   list.innerHTML =
-    makeSection('Столы',       ld.desks,      'desk',      d => d.fixed ? '#d97706' : '#2563eb') +
-    makeSection('Стены',       ld.walls,      'wall',      () => STRUCT_COLORS.wall) +
-    makeSection('Границы',     ld.boundaries, 'boundary',  b => normalizeHexColor(b.color, DEFAULT_ZONE_COLOR)) +
-    makeSection('Перегородки', ld.partitions, 'partition', () => STRUCT_COLORS.partition) +
-    makeSection('Двери',       ld.doors || [], 'door',     () => STRUCT_COLORS.door);
+    makeDeskSection(ld.desks || []) +
+    makeWallSection(ld.walls || []) +
+    makePartitionSection(ld.partitions || []) +
+    makeDoorSection(ld.doors || []) +
+    makeBoundarySection(ld.boundaries || []);
 
   list.querySelectorAll('.ed-obj-item').forEach(item => {
     item.addEventListener('click', (ev) => {
@@ -1726,6 +2634,32 @@ function renderObjectList() {
         return;
       }
       selectObj(type, id);
+    });
+  });
+
+  // Ungroup buttons
+  list.querySelectorAll('.ed-obj-ungroup-btn').forEach(btn => {
+    btn.addEventListener('click', ev => {
+      ev.stopPropagation();
+      ungroupDesks(btn.dataset.groupId);
+    });
+  });
+  // Group header click — select all in group
+  list.querySelectorAll('.ed-obj-group-header').forEach(hdr => {
+    hdr.addEventListener('click', ev => {
+      if (ev.target.classList.contains('ed-obj-ungroup-btn')) return;
+      const gid = hdr.dataset.groupId;
+      if (!gid || !ld) return;
+      const gDesks = ld.desks.filter(d => d.group_id === gid);
+      if (!gDesks.length) return;
+      ed.selType = 'desk';
+      ed.selId = gDesks[0].id;
+      ed.multiDeskIds = gDesks.slice(1).map(d => d.id);
+      ed.multiStructKeys = [];
+      renderDesks();
+      renderSelection();
+      renderObjectList();
+      showPropsFor('desk', gDesks[0].id);
     });
   });
 }
@@ -1757,15 +2691,22 @@ function showPropsFor(type, id) {
   const empty  = $el('ed-props-empty');
   const deskP  = $el('ed-props-desk');
   const structP = $el('ed-props-struct');
+  const doorP  = $el('ed-props-door');
   const zoneFields = $el('ep-zone-fields');
   const deskSingle = $el('ep-single-desk-fields');
   const deskMulti = $el('ep-multi-desk-panel');
   const deskMultiMode = type === null && hasMultiDeskSelection() && !hasMultiStructSelection();
 
+  const el_door = type === 'door' ? (ld?.doors || []).find(x => x.id === id) : null;
+  const isDoorNewStyle = isNewDoor(el_door);
+
   if (empty)   empty.classList.toggle('ed-hidden', type !== null || deskMultiMode);
   if (deskP)   deskP.classList.toggle('ed-hidden', !(type === 'desk' || deskMultiMode));
-  if (structP) structP.classList.toggle('ed-hidden', !['wall','boundary','partition','door'].includes(type));
+  if (doorP)   doorP.classList.toggle('ed-hidden', !(type === 'door' && isDoorNewStyle));
+  if (structP) structP.classList.toggle('ed-hidden', !(['wall','boundary','partition'].includes(type) || (type === 'door' && !isDoorNewStyle)));
   if (zoneFields) zoneFields.classList.toggle('ed-hidden', type !== 'boundary');
+  const wallFields = $el('ep-wall-fields');
+  if (wallFields) wallFields.classList.toggle('ed-hidden', type === 'boundary');
   if (deskSingle) deskSingle.classList.toggle('ed-hidden', deskMultiMode);
   if (deskMulti) deskMulti.classList.toggle('ed-hidden', !deskMultiMode);
 
@@ -1794,7 +2735,7 @@ function showPropsFor(type, id) {
     _v('ep-r', Math.round(d.r || 0));
   }
 
-  if (['wall','boundary','partition','door'].includes(type) && id && ld) {
+  if (['wall','boundary','partition','door'].includes(type) && id && ld && !(type === 'door' && isDoorNewStyle)) {
     const arr = type === 'wall'
       ? ld.walls
       : type === 'boundary'
@@ -1817,14 +2758,73 @@ function showPropsFor(type, id) {
       _v('ep-struct-label-pos', labelPos);
       _v('ep-struct-label-angle', Math.round(labelAngle));
       _v('ep-struct-label-orient', labelOrientationFromAngle(labelAngle));
+      _v('ep-zone-type', normalizeZoneType(el.zone_type));
+      const opVal = boundaryFillOpacity(el);
+      _v('ep-zone-opacity', opVal);
+      const opPct = $el('ep-zone-opacity-pct');
+      if (opPct) opPct.textContent = Math.round(opVal * 100) + '%';
+      // hide "closed" checkbox — boundary is always closed
+      const closedRow = $el('ep-struct-closed')?.closest('.ed-prop-row');
+      if (closedRow) closedRow.style.display = 'none';
+    } else {
+      const closedRow = $el('ep-struct-closed')?.closest('.ed-prop-row');
+      if (closedRow) closedRow.style.display = '';
     }
     const ptCount = $el('ep-struct-pt-count');
     if (ptCount) ptCount.textContent = el.pts?.length || 0;
+    // Length input for wall/partition
+    const lenEl = $el('ep-struct-length');
+    if (lenEl) {
+      if (type !== 'boundary') {
+        const len = polylineLength(el.pts || []);
+        lenEl.value = len;
+        lenEl.disabled = false;
+      } else {
+        lenEl.value = '';
+        lenEl.disabled = true;
+      }
+    }
+    // Angle input for wall/partition (angle of first segment)
+    const angleEl = $el('ep-struct-angle');
+    if (angleEl) {
+      if (type !== 'boundary' && el.pts && el.pts.length >= 2) {
+        const [ax, ay] = el.pts[0];
+        const [bx, by] = el.pts[1];
+        const angleDeg = Math.atan2(by - ay, bx - ax) * 180 / Math.PI;
+        angleEl.value = Math.round(angleDeg);
+        angleEl.disabled = false;
+      } else {
+        angleEl.value = '';
+        angleEl.disabled = true;
+      }
+    }
+    // Zone geometry (read-only bounds)
+    if (type === 'boundary') {
+      const b = pointsBounds(el.pts || []);
+      const setInfo = (id, v) => { const e = $el(id); if (e) e.textContent = v != null ? Math.round(v) : '—'; };
+      setInfo('ep-zone-x', b?.minX);
+      setInfo('ep-zone-y', b?.minY);
+      setInfo('ep-zone-w', b != null ? b.maxX - b.minX : null);
+      setInfo('ep-zone-h', b != null ? b.maxY - b.minY : null);
+    }
   }
   toggleStructLabelAngleField();
+
+  if (type === 'door' && isDoorNewStyle && el_door) {
+    _v('ep-door-width', Math.round(el_door.width || DOOR_WIDTH));
+    _v('ep-door-angle', Math.round((el_door.angle || 0) * 180 / Math.PI));
+    _vc('ep-door-flip', !!el_door.flip);
+    _vc('ep-door-locked', !!el_door.locked);
+    const wallInfo = $el('ep-door-wall-info');
+    if (wallInfo) {
+      const wt = el_door.wallType === 'wall' ? 'Стена' : el_door.wallType === 'partition' ? 'Перегородка' : '—';
+      wallInfo.textContent = el_door.wallId ? `${wt} (${el_door.wallId.slice(0, 8)}…)` : '—';
+    }
+  }
 }
 
 function _v(id, val) { const el = $el(id); if (el) el.value = val; }
+function _vIfNotFocused(id, val) { const el = $el(id); if (el && document.activeElement !== el) el.value = val; }
 function _vc(id, checked) { const el = $el(id); if (el) el.checked = checked; }
 
 function _numOrNull(id) {
@@ -1872,6 +2872,7 @@ function syncDeskBatchPanel() {
 
 function applyDeskBatchProps() {
   if (!ld || !hasMultiDeskSelection()) return;
+  histSnapshot();
   const targets = selectedDeskRecords({ includePrimary: false, skipLocked: true });
   const lockedSkipped = selectedDeskRecords({ includePrimary: false, skipLocked: false }).length - targets.length;
   if (!targets.length) {
@@ -1928,6 +2929,7 @@ function applyDeskBatchProps() {
 function rotateDeskSelectionBy(deltaDeg) {
   const delta = Number(deltaDeg);
   if (!ld || !Number.isFinite(delta) || Math.abs(delta) < 1e-6) return false;
+  histSnapshot();
 
   const selectedIds = selectedDeskIds({ includePrimary: true });
   if (!selectedIds.length) return false;
@@ -2017,6 +3019,17 @@ function initPropsListeners() {
   });
   $el('ep-batch-apply')?.addEventListener('click', () => applyDeskBatchProps());
 
+  // Align buttons
+  document.querySelectorAll('[data-align]').forEach(btn => {
+    btn.addEventListener('click', () => alignSelected(btn.dataset.align));
+  });
+  document.querySelectorAll('[data-distribute]').forEach(btn => {
+    btn.addEventListener('click', () => distributeSelected(btn.dataset.distribute));
+  });
+  $el('ep-group-btn')?.addEventListener('click', () => groupSelectedDesks());
+  $el('ep-ungroup-btn')?.addEventListener('click', () => ungroupSelected());
+  $el('ep-duplicate-btn')?.addEventListener('click', () => duplicateSelected());
+
   $el('ep-desk-del')?.addEventListener('click', () => {
     if (!ed.selId || ed.selType !== 'desk') return;
     const d = ld?.desks?.find((x) => x.id === ed.selId);
@@ -2036,13 +3049,41 @@ function initPropsListeners() {
   });
   $el('ep-struct-label-orient')?.addEventListener('change', () => toggleStructLabelAngleField());
   $el('ep-struct-label-angle')?.addEventListener('change', () => applyStructProps({ syncForm: true }));
-  $el('ep-struct-label-angle')?.addEventListener('input', () => applyStructProps({ syncForm: false }));
-  $el('ep-struct-label-size')?.addEventListener('input', () => applyStructProps({ syncForm: false }));
-  $el('ep-struct-label')?.addEventListener('input', () => applyStructProps({ syncForm: false }));
+  $el('ep-struct-label-angle')?.addEventListener('input', () => applyStructProps({ syncForm: false, skipHistory: true }));
+  $el('ep-struct-label-size')?.addEventListener('input', () => applyStructProps({ syncForm: false, skipHistory: true }));
+  $el('ep-struct-label')?.addEventListener('input', () => applyStructProps({ syncForm: false, skipHistory: true }));
   $el('ep-struct-label')?.addEventListener('change', () => applyStructProps({ syncForm: true }));
+  $el('ep-struct-angle')?.addEventListener('change', () => applyStructProps({ syncForm: true }));
+  $el('ep-struct-length')?.addEventListener('change', () => applyStructProps({ syncForm: true }));
   $el('ep-struct-del')?.addEventListener('click', () => {
     if (!ed.selId) return;
     deleteStructEl(ed.selType, ed.selId);
+  });
+
+  // Zone (boundary) extra props
+  $el('ep-zone-type')?.addEventListener('change', () => applyStructProps({ syncForm: true }));
+  $el('ep-zone-opacity')?.addEventListener('input', () => {
+    const v = Number($el('ep-zone-opacity')?.value);
+    const pct = $el('ep-zone-opacity-pct');
+    if (pct) pct.textContent = Math.round(v * 100) + '%';
+    applyStructProps({ syncForm: false, skipHistory: true });
+  });
+  $el('ep-zone-opacity')?.addEventListener('change', () => applyStructProps({ syncForm: true }));
+
+  // Door object props
+  $el('ep-door-width')?.addEventListener('change', () => applyDoorProps());
+  $el('ep-door-angle')?.addEventListener('change', () => applyDoorProps());
+  $el('ep-door-flip')?.addEventListener('change', () => {
+    applyDoorProps();
+    ed.doorFlip = !!$el('ep-door-flip')?.checked;
+  });
+  $el('ep-door-locked')?.addEventListener('change', () => applyDoorProps());
+  $el('ep-door-del')?.addEventListener('click', () => {
+    if (!ed.selId || ed.selType !== 'door') return;
+    const door = (ld?.doors || []).find(x => x.id === ed.selId);
+    if (isStructLocked(door)) { edToast('Объект закреплён', 'info'); return; }
+    ld.doors = ld.doors.filter(d => d.id !== ed.selId);
+    deselect(); markDirty(); renderAll();
   });
 }
 
@@ -2050,6 +3091,7 @@ function applyDeskProps() {
   if (ed.selType !== 'desk' || !ed.selId || !ld) return;
   const d = ld.desks.find(x => x.id === ed.selId);
   if (!d) return;
+  histSnapshot();
   d.label       = $el('ep-label')?.value || d.label;
   d.name        = $el('ep-name')?.value || null;
   d.team        = $el('ep-team')?.value || null;
@@ -2076,8 +3118,9 @@ function applyDeskProps() {
 }
 
 function applyStructProps(opts = {}) {
-  const { syncForm = true } = opts;
+  const { syncForm = true, skipHistory = false } = opts;
   if (!ed.selType || !ed.selId || !ld) return;
+  if (!skipHistory) histSnapshot();
   const newType = $el('ep-struct-type')?.value;
   const closed  = !!$el('ep-struct-closed')?.checked;
   const locked  = !!$el('ep-struct-locked')?.checked;
@@ -2117,12 +3160,51 @@ function applyStructProps(opts = {}) {
   el.thick  = thick;
   el.closed = closed;
   el.locked = locked;
+
+  // Wall/partition angle rotation
+  if (ed.selType !== 'boundary' && ed.selType !== 'door' && el.pts && el.pts.length >= 2) {
+    const angleInput = _numOrNull('ep-struct-angle');
+    if (angleInput !== null) {
+      const [ax, ay] = el.pts[0];
+      const [bx, by] = el.pts[1];
+      const currentAngle = Math.atan2(by - ay, bx - ax);
+      const targetAngle = angleInput * Math.PI / 180;
+      const delta = targetAngle - currentAngle;
+      if (Math.abs(delta) > 0.0005) {
+        const cx = el.pts[0][0], cy = el.pts[0][1];
+        el.pts = el.pts.map(([x, y]) => {
+          const dx = x - cx, dy = y - cy;
+          return [
+            cx + dx * Math.cos(delta) - dy * Math.sin(delta),
+            cy + dx * Math.sin(delta) + dy * Math.cos(delta),
+          ];
+        });
+      }
+    }
+    // Wall/partition length scaling (from first point)
+    const lenInput = _numOrNull('ep-struct-length');
+    if (lenInput !== null && lenInput > 0) {
+      const currentLen = polylineLength(el.pts);
+      if (currentLen > 0) {
+        const scale = lenInput / currentLen;
+        const [ox, oy] = el.pts[0];
+        el.pts = el.pts.map(([x, y]) => [
+          ox + (x - ox) * scale,
+          oy + (y - oy) * scale,
+        ]);
+      }
+    }
+  }
+
   if (ed.selType === 'boundary') {
     el.label = zoneLabel || null;
     el.color = zoneColor;
     el.label_size = zoneLabelSizeValue;
     el.label_pos = zoneLabelPos;
     el.label_angle = zoneLabelAngle;
+    el.zone_type = normalizeZoneType($el('ep-zone-type')?.value);
+    const opInput = Number($el('ep-zone-opacity')?.value);
+    el.opacity = Number.isFinite(opInput) && opInput >= 0.05 && opInput <= 1 ? opInput : DEFAULT_ZONE_OPACITY;
   } else {
     if (Object.prototype.hasOwnProperty.call(el, 'color')) delete el.color;
     if (Object.prototype.hasOwnProperty.call(el, 'label_size')) delete el.label_size;
@@ -2130,27 +3212,29 @@ function applyStructProps(opts = {}) {
     if (Object.prototype.hasOwnProperty.call(el, 'label_angle')) delete el.label_angle;
   }
 
-  // If type changed, move to different array
-  if (newType && newType !== ed.selType) {
+  // If type changed, move to different array (door reclassification not allowed via this panel)
+  if (newType && newType !== ed.selType && ['wall', 'boundary', 'partition'].includes(newType)) {
     srcArr.splice(idx, 1);
     const dstArr = newType === 'wall'
       ? ld.walls
       : newType === 'boundary'
         ? ld.boundaries
-        : newType === 'partition'
-          ? ld.partitions
-          : (ld.doors || (ld.doors = []));
+        : ld.partitions;
     if (newType === 'boundary') {
       el.color = zoneColor;
       el.label = zoneLabel || el.label || null;
       el.label_size = zoneLabelSizeValue;
       el.label_pos = zoneLabelPos;
       el.label_angle = zoneLabelAngle;
+      el.zone_type = normalizeZoneType($el('ep-zone-type')?.value);
+      el.opacity = DEFAULT_ZONE_OPACITY;
     } else {
       if (Object.prototype.hasOwnProperty.call(el, 'color')) delete el.color;
       if (Object.prototype.hasOwnProperty.call(el, 'label_size')) delete el.label_size;
       if (Object.prototype.hasOwnProperty.call(el, 'label_pos')) delete el.label_pos;
       if (Object.prototype.hasOwnProperty.call(el, 'label_angle')) delete el.label_angle;
+      if (Object.prototype.hasOwnProperty.call(el, 'zone_type')) delete el.zone_type;
+      if (Object.prototype.hasOwnProperty.call(el, 'opacity')) delete el.opacity;
     }
     dstArr.push(el);
     ed.selType = newType;
@@ -2162,6 +3246,21 @@ function applyStructProps(opts = {}) {
   if (syncForm) showPropsFor(ed.selType, ed.selId);
 }
 
+function applyDoorProps() {
+  if (ed.selType !== 'door' || !ed.selId || !ld) return;
+  const door = (ld.doors || []).find(x => x.id === ed.selId);
+  if (!isNewDoor(door)) return;
+  histSnapshot();
+  const w = _numOrNull('ep-door-width');
+  if (w !== null) door.width = Math.max(10, Math.min(200, w));
+  const deg = _numOrNull('ep-door-angle');
+  if (deg !== null) door.angle = deg * Math.PI / 180;
+  door.flip   = !!$el('ep-door-flip')?.checked;
+  door.locked = !!$el('ep-door-locked')?.checked;
+  markDirty();
+  renderStructure();
+}
+
 function deleteStructEl(type, id) {
   if (!ld || !type || !id) return;
   const el = getStructByTypeId(type, id);
@@ -2169,6 +3268,7 @@ function deleteStructEl(type, id) {
     edToast('Объект закреплён: удаление недоступно', 'info');
     return;
   }
+  histSnapshot();
   if (type === 'wall')      ld.walls      = ld.walls.filter(x => x.id !== id);
   if (type === 'boundary')  ld.boundaries = ld.boundaries.filter(x => x.id !== id);
   if (type === 'partition') ld.partitions = ld.partitions.filter(x => x.id !== id);
@@ -2180,6 +3280,7 @@ function deleteStructEl(type, id) {
 
 function deleteSelectedDesks() {
   if (!ld) return false;
+  histSnapshot();
   if (hasMultiDeskSelection()) {
     const ids = new Set(ed.multiDeskIds || []);
     let removed = 0;
@@ -2229,6 +3330,7 @@ function deleteSelectedDesks() {
 
 function deleteSelectedStructures() {
   if (!ld) return false;
+  histSnapshot();
   if (hasMultiStructSelection()) {
     const byType = { wall: new Set(), boundary: new Set(), partition: new Set(), door: new Set() };
     (ed.multiStructKeys || []).forEach((raw) => {
@@ -2280,6 +3382,7 @@ function deleteSelectedStructures() {
 
 function deleteSelectedMultiObjects() {
   if (!ld) return false;
+  histSnapshot();
   const hasDesk = hasMultiDeskSelection();
   const hasStruct = hasMultiStructSelection();
   if (!hasDesk && !hasStruct) return false;
@@ -2473,7 +3576,7 @@ function startGroupDrag(pointerId, startPt) {
     return false;
   }
 
-  ed.dragGroup = { pointerId, startPt, desks, structs, moved: false };
+  ed.dragGroup = { pointerId, startPt, desks, structs, moved: false, beforeSnap: _snapLd() };
   _svg()?.setPointerCapture(pointerId);
   return true;
 }
@@ -2481,16 +3584,36 @@ function startGroupDrag(pointerId, startPt) {
 function updateGroupDrag(pt) {
   const g = ed.dragGroup;
   if (!g) return;
-  const dx = pt.x - g.startPt.x;
-  const dy = pt.y - g.startPt.y;
+  const rawDx = pt.x - g.startPt.x;
+  const rawDy = pt.y - g.startPt.y;
+
+  // Compute smart snap using the first movable desk as anchor
+  let dx = rawDx, dy = rawDy;
+  if (g.desks?.length) {
+    const anchor = g.desks[0];
+    const excludeIds = g.desks.map(it => it.desk.id);
+    const snapped = computeSnapForRect(
+      anchor.x + rawDx, anchor.y + rawDy,
+      anchor.desk.w, anchor.desk.h,
+      excludeIds
+    );
+    dx = snapped.x - anchor.x;
+    dy = snapped.y - anchor.y;
+    ed.snapGuides = snapped.guides;
+  } else {
+    dx = snapV(rawDx + (g.structs?.[0]?.pts?.[0]?.[0] ?? 0)) - (g.structs?.[0]?.pts?.[0]?.[0] ?? 0);
+    dy = snapV(rawDy + (g.structs?.[0]?.pts?.[0]?.[1] ?? 0)) - (g.structs?.[0]?.pts?.[0]?.[1] ?? 0);
+    ed.snapGuides = [];
+  }
+
   for (const it of (g.desks || [])) {
-    it.desk.x = snapV(it.x + dx);
-    it.desk.y = snapV(it.y + dy);
+    it.desk.x = it.x + dx;
+    it.desk.y = it.y + dy;
   }
   for (const it of (g.structs || [])) {
-    it.el.pts = it.pts.map(([x, y]) => [snapV(x + dx), snapV(y + dy)]);
+    it.el.pts = it.pts.map(([x, y]) => [snapV(x + rawDx), snapV(y + rawDy)]);
   }
-  g.moved = g.moved || Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2;
+  g.moved = g.moved || Math.abs(rawDx) > 0.2 || Math.abs(rawDy) > 0.2;
   if (g.structs?.length) renderStructure();
   if (g.desks?.length) renderDesks();
   renderSelection();
@@ -2499,8 +3622,11 @@ function updateGroupDrag(pt) {
 function endGroupDrag() {
   if (!ed.dragGroup) return false;
   const moved = !!ed.dragGroup.moved;
+  const beforeSnap = ed.dragGroup.beforeSnap;
   ed.dragGroup = null;
-  if (moved) markDirty();
+  ed.snapGuides = [];
+  renderSelection();
+  if (moved) { histPushSnap(beforeSnap); markDirty(); }
   return moved;
 }
 
@@ -2518,7 +3644,39 @@ function startSingleStructDrag(type, id, startPt) {
   const arr = structArrayByType(type);
   if (!Array.isArray(arr)) return false;
   const el = arr.find(x => x.id === id);
-  if (!el || !Array.isArray(el.pts) || el.pts.length < 2) return false;
+  if (!el) return false;
+
+  const beforeSnap = _snapLd();
+
+  // New-style door: drag cx/cy
+  if (isNewDoor(el)) {
+    if (isStructLocked(el)) {
+      edToast('Объект закреплён и не может быть перемещён', 'info');
+      return false;
+    }
+    const baseCx = el.cx, baseCy = el.cy;
+    let moved = false;
+    const onMove = (ev) => {
+      const p = svgPt(ev);
+      const dx = p.x - startPt.x;
+      const dy = p.y - startPt.y;
+      el.cx = snapV(baseCx + dx);
+      el.cy = snapV(baseCy + dy);
+      moved = moved || Math.hypot(dx, dy) > 0.2;
+      renderStructure();
+      renderSelection();
+    };
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      if (moved) { histPushSnap(beforeSnap); markDirty(); }
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    return true;
+  }
+
+  if (!Array.isArray(el.pts) || el.pts.length < 2) return false;
   if (isStructLocked(el)) {
     edToast('Объект закреплён и не может быть перемещён', 'info');
     return false;
@@ -2540,7 +3698,7 @@ function startSingleStructDrag(type, id, startPt) {
   const onUp = () => {
     document.removeEventListener('pointermove', onMove);
     document.removeEventListener('pointerup', onUp);
-    if (moved) markDirty();
+    if (moved) { histPushSnap(beforeSnap); markDirty(); }
   };
 
   document.addEventListener('pointermove', onMove);
@@ -2580,22 +3738,35 @@ function onSvgPointerDown(e) {
 
   if (!inBackground) return;
 
-  if (isDeskBlockMode()) {
-    const preview = ed.deskTool.preview;
-    if (preview?.awaitConfirm) return;
+  if (isDeskMultiMode()) {
+    // Float preview: no drag needed; click handled in onSvgClick
     e.preventDefault();
-    startDeskBlockPreview(pt, e.pointerId);
     return;
   }
 
-  if (['wall','boundary','partition','door'].includes(ed.mode)) {
+  // Boundary: drag-to-rectangle (intercepted before general drawing)
+  if (ed.mode === 'boundary') {
     e.preventDefault();
-    const pt = svgPt(e);
-    const snapped = [snapV(pt.x), snapV(pt.y)];
+    ed.boundaryDrag = { pointerId: e.pointerId, start: [pt.x, pt.y], current: [pt.x, pt.y] };
+    _svg()?.setPointerCapture(e.pointerId);
+    renderDrawing();
+    updateStatusBar(); // show "drag in progress" hint
+    return;
+  }
+
+  // Door: handled by click (onSvgClick), no drag drawing
+  if (ed.mode === 'door') return;
+
+  // Wall / Partition: polyline drawing with endpoint snap
+  if (LINE_TOOLS.includes(ed.mode)) {
+    e.preventDefault();
+    const ep = snapToEndpoints(pt);
+    const snapped = ep || [snapV(pt.x), snapV(pt.y)];
 
     if (!ed.drawing) {
       ed.drawing = { type: ed.mode, pts: [snapped], rubberPt: snapped };
       renderDrawing();
+      updateStatusBar(); // show "1 точка" in hint
     }
     return;
   }
@@ -2648,12 +3819,12 @@ function onSvgPointerMove(e) {
     return;
   }
 
-  if (isDeskBlockMode() && ed.deskTool.preview?.dragging) {
-    rebuildDeskBlockPreview(pt);
+  if (isDeskMultiMode()) {
+    updateDeskFloatPreview(pt);
     return;
   }
 
-  // Drawing rubber band
+  // Drawing rubber band (wall/partition)
   if (ed.drawing) {
     const last = ed.drawing.pts?.[ed.drawing.pts.length - 1];
     ed.drawing.rubberPt = getConstrainedDrawPoint(last, pt, {
@@ -2661,6 +3832,26 @@ function onSvgPointerMove(e) {
       angleStepDeg: DRAW_ANGLE_STEP_DEG,
     });
     renderDrawing();
+    return;
+  }
+
+  // Boundary drag-to-rect
+  if (ed.boundaryDrag) {
+    ed.boundaryDrag.current = [pt.x, pt.y];
+    renderDrawing();
+    return;
+  }
+
+  // Door mode: show nearest wall preview
+  if (ed.mode === 'door') {
+    const hit = findNearestWallSegment(pt);
+    const hadPreview = !!ed.doorPreview;
+    ed.doorPreview = hit ? { proj: hit.proj, angle: hit.angle } : null;
+    const svg = _svg();
+    if (svg) svg.style.cursor = hit ? 'pointer' : 'crosshair';
+    renderDrawing();
+    // Update hint only when snap state changes (not every frame)
+    if (!!ed.doorPreview !== hadPreview) updateStatusBar();
   }
 }
 
@@ -2676,7 +3867,8 @@ function onSvgPointerUp(e) {
   if (ed.marquee && finishMarqueeSelection()) {
     return;
   }
-  if (isDeskBlockMode() && finalizeDeskBlockPreview()) {
+  if (ed.boundaryDrag) {
+    commitBoundaryDrag();
     return;
   }
   if (ed.spacePanning) {
@@ -2691,8 +3883,76 @@ function onSvgPointerUp(e) {
   }
 }
 
+function commitBoundaryDrag() {
+  const drag = ed.boundaryDrag;
+  if (!drag || !ld) { ed.boundaryDrag = null; return; }
+  histSnapshot();
+  ed.boundaryDrag = null;
+  const [x1, y1] = drag.start;
+  const [x2, y2] = drag.current;
+  const minW = worldUnitsForScreenPx(6);
+  if (Math.abs(x2 - x1) < minW && Math.abs(y2 - y1) < minW) {
+    renderDrawing();
+    return; // too small, cancel
+  }
+  const lx = snapV(Math.min(x1, x2)), rx = snapV(Math.max(x1, x2));
+  const ty = snapV(Math.min(y1, y2)), by = snapV(Math.max(y1, y2));
+  const el = {
+    id: uid(),
+    pts: [[lx, ty], [rx, ty], [rx, by], [lx, by]],
+    thick: 2,
+    closed: true,
+    conf: 1.0,
+    locked: false,
+    label: null,
+    color: DEFAULT_ZONE_COLOR,
+    label_size: defaultZoneLabelSize(),
+    label_pos: 'center',
+    label_angle: 0,
+    zone_type: DEFAULT_ZONE_TYPE,
+    opacity: DEFAULT_ZONE_OPACITY,
+  };
+  ld.boundaries.push(el);
+  markDirty();
+  selectObj('boundary', el.id);
+  renderStructure();
+  renderDrawing();
+  updateStatusBar(); // reset hint to idle after commit
+}
+
 function onSvgClick(e) {
   if (ed.spacePanning || ed.panning) return;
+
+  // Door mode: handle click before inBackground check — the click lands on the
+  // wall's hitShape element (not the SVG background), so the normal guard would
+  // swallow it. Door placement only needs svgPt + findNearestWallSegment.
+  if (ed.mode === 'door') {
+    const pt = svgPt(e);
+    const hit = findNearestWallSegment(pt);
+    if (!hit) {
+      edToast('Кликните ближе к стене или перегородке', 'info');
+      return;
+    }
+    const el = {
+      id: uid(),
+      type: 'door',
+      cx: hit.proj[0],
+      cy: hit.proj[1],
+      angle: hit.angle,
+      width: DOOR_WIDTH,
+      flip: ed.doorFlip,
+      wallId: hit.el.id,
+      wallType: hit.type,
+      locked: false,
+      conf: 1.0,
+    };
+    histSnapshot();
+    ld.doors = [...(ld.doors || []), el];
+    markDirty();
+    selectObj('door', el.id);
+    renderStructure();
+    return;
+  }
 
   const target = e.target;
   const inBackground = target === _svg() ||
@@ -2701,20 +3961,15 @@ function onSvgClick(e) {
 
   if (!inBackground) return;
 
-  if (isDeskBlockMode()) {
-    const preview = ed.deskTool.preview;
-    if (!preview) return;
-    if (preview.justReleased) {
-      preview.justReleased = false;
-      return;
-    }
-    if (preview.awaitConfirm) {
-      commitDeskBlockPreview();
+  if (isDeskMultiMode()) {
+    if (ed.deskTool.preview) {
+      commitDeskFloatPreview();
     }
     return;
   }
 
-  if (['wall','boundary','partition','door'].includes(ed.mode) && ed.drawing) {
+  // Line tools: add point
+  if (LINE_TOOLS.includes(ed.mode) && ed.drawing) {
     const pt = svgPt(e);
     const pts = ed.drawing.pts;
     const base = pts?.[pts.length - 1];
@@ -2722,24 +3977,14 @@ function onSvgClick(e) {
       angleLock: !!e.shiftKey,
       angleStepDeg: DRAW_ANGLE_STEP_DEG,
     });
-
-    // Close boundary on click near first point
-    if (ed.mode === 'boundary' && pts.length >= 3) {
-      const [fx, fy] = pts[0];
-      const closeR = worldUnitsForScreenPx(PX_CLOSE_THRESHOLD);
-      if (Math.hypot(snapped[0] - fx, snapped[1] - fy) < closeR) {
-        finishDrawing(true);
-        return;
-      }
-    }
-
     pts.push(snapped);
     renderDrawing();
+    updateStatusBar(); // update pt count in hint
   }
 }
 
 function onSvgDblClick(e) {
-  if (['wall','partition','door'].includes(ed.mode) && ed.drawing) {
+  if (LINE_TOOLS.includes(ed.mode) && ed.drawing) {
     finishDrawing(false);
   }
 }
@@ -2747,14 +3992,19 @@ function onSvgDblClick(e) {
 function onWheelZoom(e) {
   e.preventDefault();
   const pt = svgPt(e);
-
-  // Smooth wheel zoom:
-  // - proportional to wheel delta (trackpad-friendly)
-  // - clamped to avoid sudden jumps on large deltas
   const rawDelta = Number.isFinite(e.deltaY) ? e.deltaY : 0;
-  const delta = Math.max(-120, Math.min(120, rawDelta));
-  const speed = e.ctrlKey ? 0.00075 : 0.00115;
-  const factor = Math.exp(delta * speed);
+
+  // ctrlKey=true means trackpad pinch-to-zoom (macOS/Chrome/Safari).
+  // deltaY values are small (~0.5–3), so use a much higher speed coefficient.
+  // Regular scroll wheel sends large deltaY (50–120), so use a lower coefficient.
+  let factor;
+  if (e.ctrlKey) {
+    // Pinch gesture: clamp per-event zoom to ±25% to avoid jumps on fast gestures
+    factor = Math.exp(Math.max(-0.25, Math.min(0.25, rawDelta * 0.06)));
+  } else {
+    const delta = Math.max(-120, Math.min(120, rawDelta));
+    factor = Math.exp(delta * 0.00115);
+  }
 
   if (ed.bgAdjust.active && ld?.bg_url) {
     const bg = getBackgroundRect();
@@ -2812,6 +4062,71 @@ function onRotateHandleDown(e, desk) {
     try { captureTarget?.releasePointerCapture(e.pointerId); } catch {}
     if (moved) {
       markDirty();
+      renderObjectList();
+    }
+  };
+
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+}
+
+function onBoundaryResizeHandleDown(e, el, handleIdx) {
+  if (ed.mode !== 'select' || !ld) return;
+  if (isStructLocked(el)) return;
+  e.stopPropagation();
+  e.preventDefault();
+  const captureTarget = _svg();
+  try { captureTarget?.setPointerCapture(e.pointerId); } catch {}
+
+  const startPt = svgPt(e);
+  const bounds = pointsBounds(el.pts);
+  if (!bounds) return;
+  // Capture base edges at drag start
+  const baseLx = bounds.minX, baseTy = bounds.minY;
+  const baseRx = bounds.maxX, baseBy = bounds.maxY;
+  const MIN_SIZE = 10;
+  let moved = false;
+
+  const onMove = ev => {
+    const p = svgPt(ev);
+    const dx = p.x - startPt.x;
+    const dy = p.y - startPt.y;
+    let lx = baseLx, ty = baseTy, rx = baseRx, by = baseBy;
+
+    // Apply delta to the relevant edges based on handle index
+    // 0=TL 1=TC 2=TR 3=MR 4=BR 5=BC 6=BL 7=ML
+    if (handleIdx === 0) { lx = snapV(baseLx+dx); ty = snapV(baseTy+dy); }
+    else if (handleIdx === 1) { ty = snapV(baseTy+dy); }
+    else if (handleIdx === 2) { rx = snapV(baseRx+dx); ty = snapV(baseTy+dy); }
+    else if (handleIdx === 3) { rx = snapV(baseRx+dx); }
+    else if (handleIdx === 4) { rx = snapV(baseRx+dx); by = snapV(baseBy+dy); }
+    else if (handleIdx === 5) { by = snapV(baseBy+dy); }
+    else if (handleIdx === 6) { lx = snapV(baseLx+dx); by = snapV(baseBy+dy); }
+    else if (handleIdx === 7) { lx = snapV(baseLx+dx); }
+
+    // Enforce minimum size
+    if (rx - lx < MIN_SIZE) {
+      if (handleIdx === 7 || handleIdx === 0 || handleIdx === 6) lx = rx - MIN_SIZE;
+      else rx = lx + MIN_SIZE;
+    }
+    if (by - ty < MIN_SIZE) {
+      if (handleIdx === 1 || handleIdx === 0 || handleIdx === 2) ty = by - MIN_SIZE;
+      else by = ty + MIN_SIZE;
+    }
+
+    el.pts = [[lx, ty], [rx, ty], [rx, by], [lx, by]];
+    moved = true;
+    renderStructure();
+    renderSelection();
+  };
+
+  const onUp = () => {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    try { captureTarget?.releasePointerCapture(e.pointerId); } catch {}
+    if (moved) {
+      markDirty();
+      showPropsFor(ed.selType, ed.selId);
       renderObjectList();
     }
   };
@@ -2906,6 +4221,15 @@ function onDeskPointerDown(e, desk) {
   }
 
   selectObj('desk', desk.id);
+  // Auto-select group siblings
+  if (desk.group_id && !e.shiftKey && ld) {
+    const siblings = ld.desks.filter(d => d.group_id === desk.group_id && d.id !== desk.id);
+    if (siblings.length > 0) {
+      ed.multiDeskIds = siblings.map(d => d.id);
+      renderDesks();
+      renderSelection();
+    }
+  }
   if (isDeskLocked(desk)) {
     edToast('Объект закреплён и не может быть перемещён', 'info');
     return;
@@ -2915,12 +4239,15 @@ function onDeskPointerDown(e, desk) {
   const sx = desk.x;
   const sy = desk.y;
   let moved = false;
+  const beforeSnap = _snapLd();
 
   const onMove = ev => {
     const p = svgPt(ev);
     moved = moved || Math.abs(p.x - startPt.x) > 0.2 || Math.abs(p.y - startPt.y) > 0.2;
-    desk.x = snapV(sx + p.x - startPt.x);
-    desk.y = snapV(sy + p.y - startPt.y);
+    const snapped = computeSnapForRect(sx + p.x - startPt.x, sy + p.y - startPt.y, desk.w, desk.h, [desk.id]);
+    desk.x = snapped.x;
+    desk.y = snapped.y;
+    ed.snapGuides = snapped.guides;
     _v('ep-x', Math.round(desk.x));
     _v('ep-y', Math.round(desk.y));
     renderDesks();
@@ -2929,7 +4256,9 @@ function onDeskPointerDown(e, desk) {
   const onUp = () => {
     document.removeEventListener('pointermove', onMove);
     document.removeEventListener('pointerup', onUp);
-    if (moved) markDirty();
+    ed.snapGuides = [];
+    renderSelection();
+    if (moved) { histPushSnap(beforeSnap); markDirty(); }
   };
   document.addEventListener('pointermove', onMove);
   document.addEventListener('pointerup', onUp);
@@ -2941,6 +4270,7 @@ function onResizeHandleDown(e, desk, handleIdx) {
     return;
   }
   e.stopPropagation();
+  const beforeSnap = _snapLd();
   const startPt = svgPt(e);
   const sx = desk.x, sy = desk.y, sw2 = desk.w, sh = desk.h;
 
@@ -2965,6 +4295,7 @@ function onResizeHandleDown(e, desk, handleIdx) {
   const onUp = () => {
     document.removeEventListener('pointermove', onMove);
     document.removeEventListener('pointerup', onUp);
+    histPushSnap(beforeSnap);
     markDirty();
   };
   document.addEventListener('pointermove', onMove);
@@ -2996,6 +4327,7 @@ function onStructPointerDown(e, type, id) {
 /* ── Drawing finish ─────────────────────────────────────────────────────────── */
 function finishDrawing(close) {
   if (!ed.drawing) return;
+  histSnapshot();
   const { type, pts } = ed.drawing;
   ed.drawing = null;
   const layer = _layer('draw');
@@ -3006,7 +4338,7 @@ function finishDrawing(close) {
   const el = {
     id: uid(),
     pts,
-    thick: type === 'wall' ? 8 : type === 'partition' ? 3 : type === 'door' ? 2.2 : 2,
+    thick: type === 'wall' ? 8 : type === 'partition' ? 3 : 2,
     closed: close || type === 'boundary',
     conf: 1.0,
     locked: false,
@@ -3017,126 +4349,73 @@ function finishDrawing(close) {
     el.label_size = defaultZoneLabelSize();
     el.label_pos = 'center';
     el.label_angle = 0;
+    el.zone_type = DEFAULT_ZONE_TYPE;
+    el.opacity = DEFAULT_ZONE_OPACITY;
   }
 
-  if (type === 'wall')      ld.walls.push(el);
+  if (type === 'wall')           ld.walls.push(el);
   else if (type === 'boundary')  ld.boundaries.push(el);
   else if (type === 'partition') ld.partitions.push(el);
-  else if (type === 'door') ld.doors = [...(ld.doors || []), el];
+  else return; // unknown type — discard
 
   markDirty();
   selectObj(type, el.id);
   renderStructure();
+  updateStatusBar(); // reset hint to idle after finishing a line
 }
 
 /* ── Desk placement ─────────────────────────────────────────────────────────── */
-function buildDeskBlockRects(anchor, orientation, direction) {
-  if (!ld) return [];
-  const seatsPerRow = clampInt(ed.deskTool.seatsPerRow, 1, 100, 6);
-  const rows = ed.deskTool.pattern === 'double'
-    ? clampInt(ed.deskTool.pairCount, 1, 25, 1) * 2
-    : clampInt(ed.deskTool.rowCount, 1, 50, 2);
+function buildPlacementRects(anchor) {
   const { w, h } = defaultDeskSize();
-
-  const seatStep = w * 1.22;
-  const rowStep = h * 1.8;
-  const aisleGap = h * 2.4;
-
-  const sign = direction >= 0 ? 1 : -1;
-  const ux = orientation === 'vertical' ? 0 : sign;
-  const uy = orientation === 'vertical' ? sign : 0;
-  const vx = orientation === 'vertical' ? 1 : 0;
-  const vy = orientation === 'vertical' ? 0 : 1;
-
+  const { placeMode, colCount, rowCount, deskGap, rowGap, axis } = ed.deskTool;
+  const cols = clampInt(colCount, 1, 100, 6);
+  const rows = placeMode === 'block' ? clampInt(rowCount, 1, 50, 2) : 1;
+  const gapDesk = deskGap !== null && deskGap >= 0 ? deskGap : w * 0.22;
+  const gapRow  = rowGap  !== null && rowGap  >= 0 ? rowGap  : h * 0.8;
+  const stepAlong = (axis === 'vertical' ? h : w) + gapDesk;
+  const stepPerp  = (axis === 'vertical' ? w : h) + gapRow;
   const rects = [];
-  for (let rIdx = 0; rIdx < rows; rIdx += 1) {
-    let rowOffset = 0;
-    if (ed.deskTool.pattern === 'double') {
-      const pairIdx = Math.floor(rIdx / 2);
-      const inPair = rIdx % 2;
-      rowOffset = pairIdx * (rowStep * 2 + aisleGap) + inPair * rowStep;
-    } else {
-      rowOffset = rIdx * rowStep;
-    }
-
-    for (let cIdx = 0; cIdx < seatsPerRow; cIdx += 1) {
-      const along = cIdx * seatStep;
-      const cx = anchor.x + ux * along + vx * rowOffset;
-      const cy = anchor.y + uy * along + vy * rowOffset;
-      rects.push({
-        x: snapV(cx - w / 2),
-        y: snapV(cy - h / 2),
-        w,
-        h,
-      });
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const along = c * stepAlong;
+      const perp  = r * stepPerp;
+      const x = axis === 'horizontal' ? anchor.x + along : anchor.x + perp;
+      const y = axis === 'horizontal' ? anchor.y + perp  : anchor.y + along;
+      rects.push({ x: snapV(x), y: snapV(y), w, h });
     }
   }
   return rects;
 }
 
-function rebuildDeskBlockPreview(currentPt) {
-  const preview = ed.deskTool.preview;
-  if (!preview || !ld) return;
-  preview.current = currentPt || preview.current || preview.anchor;
+// Keep old name as alias for any callers
+function buildDeskBlockRects(anchor, _orientation, _direction) {
+  return buildPlacementRects(anchor);
+}
 
-  const axis = ed.deskTool.axis === 'vertical' ? 'vertical' : 'horizontal';
-  preview.orientation = axis;
-
-  const dx = preview.current.x - preview.anchor.x;
-  const dy = preview.current.y - preview.anchor.y;
-  const dragMin = worldUnitsForScreenPx(8);
-
-  const axisDelta = axis === 'vertical' ? dy : dx;
-  if (Math.abs(axisDelta) > dragMin) {
-    preview.direction = axisDelta >= 0 ? 1 : -1;
-  }
-
-  const rects = buildDeskBlockRects(preview.anchor, preview.orientation, preview.direction);
-  const existing = ld.desks || [];
-
-  let conflictCount = 0;
+function buildDeskPreviewAtPt(pt) {
+  const anchor = { x: snapV(pt.x), y: snapV(pt.y) };
+  const rects = buildPlacementRects(anchor);
+  const existing = ld?.desks || [];
+  let conflicts = 0;
   const desks = rects.map(r => {
     const conflict = existing.some(d => rectsOverlap(r, d));
-    if (conflict) conflictCount += 1;
+    if (conflict) conflicts++;
     return { ...r, conflict };
   });
-
-  preview.desks = desks;
-  preview.conflicts = conflictCount;
-  preview.overflow = existing.length + desks.length > MAX_LAYOUT_DESKS;
-
-  syncDeskBulkControls();
-  renderDrawing();
-}
-
-function startDeskBlockPreview(pt, pointerId) {
-  const anchor = { x: snapV(pt.x), y: snapV(pt.y) };
-  ed.deskTool.preview = {
+  return {
     anchor,
-    current: anchor,
-    orientation: 'horizontal',
-    direction: 1,
-    dragging: true,
-    awaitConfirm: false,
-    justReleased: false,
-    pointerId,
-    desks: [],
-    conflicts: 0,
-    overflow: false,
+    desks,
+    conflicts,
+    overflow: (ld?.desks.length || 0) + rects.length > MAX_LAYOUT_DESKS,
+    _cursorPt: pt,
   };
-  rebuildDeskBlockPreview(anchor);
-  _svg()?.setPointerCapture(pointerId);
 }
 
-function finalizeDeskBlockPreview() {
-  const preview = ed.deskTool.preview;
-  if (!preview || !preview.dragging) return false;
-  preview.dragging = false;
-  preview.awaitConfirm = true;
-  preview.justReleased = true;
+function updateDeskFloatPreview(pt) {
+  if (!isDeskMultiMode() || !ld) return;
+  ed.deskTool.preview = buildDeskPreviewAtPt(pt);
   syncDeskBulkControls();
   renderDrawing();
-  return true;
 }
 
 function cancelDeskBlockPreview() {
@@ -3147,54 +4426,214 @@ function cancelDeskBlockPreview() {
   return true;
 }
 
-function commitDeskBlockPreview() {
+function commitDeskFloatPreview() {
   if (!ld) return false;
+  histSnapshot();
   const preview = ed.deskTool.preview;
-  if (!preview || !preview.awaitConfirm) return false;
-  if (!preview.desks.length) {
-    cancelDeskBlockPreview();
-    return true;
-  }
+  if (!preview?.desks?.length) return false;
   if (preview.overflow) {
-    edToast(`Нельзя добавить блок: лимит ${MAX_LAYOUT_DESKS} мест на схему`, 'error');
-    return true;
+    edToast(`Нельзя добавить: лимит ${MAX_LAYOUT_DESKS} мест на схему`, 'error');
+    return false;
   }
-
-  const used = collectDeskNumberSet();
-  const inserted = preview.desks.map(r => makeDeskRecord(
+  const groupId = uid();
+  const groupLabel = ed.deskTool.groupLabel?.trim() || null;
+  const { numScheme: scheme, numPrefix: prefix, numStart: start } = ed.deskTool;
+  const labels = generateSequentialLabels(preview.desks.length, scheme, prefix, start);
+  const inserted = preview.desks.map((r, i) => makeDeskRecord(
     { x: r.x, y: r.y, w: r.w, h: r.h },
-    takeNextDeskLabel(used),
+    labels[i],
+    groupId,
+    groupLabel,
   ));
   ld.desks.push(...inserted);
   markDirty();
-
-  const conflicts = preview.conflicts;
-  cancelDeskBlockPreview();
   renderAll();
-  if (inserted[0]) selectObj('desk', inserted[0].id);
+  // Select all inserted desks
+  if (inserted.length === 1) {
+    selectObj('desk', inserted[0].id);
+  } else if (inserted.length > 1) {
+    ed.selType = 'desk';
+    ed.selId = inserted[0].id;
+    ed.multiDeskIds = inserted.slice(1).map(d => d.id);
+    renderDesks();
+    renderSelection();
+    renderObjectList();
+    showPropsFor('desk', inserted[0].id);
+  }
+  const conflicts = preview.conflicts;
   edToast(
     `Добавлено мест: ${inserted.length}${conflicts ? ` (конфликтов: ${conflicts})` : ''}`,
     conflicts ? 'info' : 'success',
   );
+  updateEditorKpis();
   return true;
 }
+
+// Legacy aliases — keep for any remaining references
+function rebuildDeskBlockPreview(pt) { updateDeskFloatPreview(pt); }
+function startDeskBlockPreview(pt) { updateDeskFloatPreview(pt); }
+function finalizeDeskBlockPreview() { return false; }
+function commitDeskBlockPreview() { return commitDeskFloatPreview(); }
 
 function placeDeskAt(pt) {
   if (!ld) return;
   if (ld.desks.length >= MAX_LAYOUT_DESKS) {
+    // limit guard — no snapshot
     edToast(`Достигнут лимит ${MAX_LAYOUT_DESKS} мест`, 'error');
     return;
   }
+  histSnapshot();
   const { w, h } = defaultDeskSize();
-  const used = collectDeskNumberSet();
+  const { numScheme: scheme, numPrefix: prefix, numStart: start } = ed.deskTool;
+  const [label] = generateSequentialLabels(1, scheme, prefix, start);
   const desk = makeDeskRecord(
     { x: snapV(pt.x - w / 2), y: snapV(pt.y - h / 2), w, h },
-    takeNextDeskLabel(used),
+    label,
   );
   ld.desks.push(desk);
   markDirty();
   selectObj('desk', desk.id);
   updateEditorKpis();
+}
+
+function ungroupDesks(groupId) {
+  if (!ld || !groupId) return;
+  histSnapshot();
+  let count = 0;
+  for (const d of ld.desks) {
+    if (d.group_id === groupId) {
+      d.group_id = null;
+      d.group_label = null;
+      count++;
+    }
+  }
+  if (count) {
+    markDirty();
+    renderObjectList();
+    renderDesks();
+    edToast(`Разгруппировано: ${count} мест`, 'success');
+  }
+}
+
+/* ── Multi-select operations ────────────────────────────────────────────────── */
+
+function duplicateSelected() {
+  if (!ld) return;
+  histSnapshot();
+  const OFFSET = 20;
+  const ids = new Set([
+    ...(ed.multiDeskIds || []),
+    ...(ed.selType === 'desk' && ed.selId ? [ed.selId] : []),
+  ]);
+  if (!ids.size) { edToast('Ничего не выбрано', 'info'); return; }
+  const used = collectDeskNumberSet();
+  const newDesks = [];
+  for (const d of (ld.desks || [])) {
+    if (!ids.has(d.id)) continue;
+    const nd = { ...d, id: uid(), x: d.x + OFFSET, y: d.y + OFFSET, group_id: null, group_label: null };
+    nd.label = takeNextDeskLabel(used);
+    newDesks.push(nd);
+  }
+  if (!newDesks.length) return;
+  ld.desks.push(...newDesks);
+  markDirty();
+  ed.selType = 'desk';
+  ed.selId = newDesks[0].id;
+  ed.multiDeskIds = newDesks.slice(1).map(d => d.id);
+  ed.multiStructKeys = [];
+  renderAll();
+  showPropsFor('desk', newDesks[0].id);
+  edToast(`Дублировано: ${newDesks.length} мест`, 'success');
+}
+
+function groupSelectedDesks() {
+  if (!ld) return;
+  const ids = selectedDeskIds();
+  if (ids.length < 2) { edToast('Выберите 2 или более места для группировки', 'info'); return; }
+  histSnapshot();
+  const gid = uid();
+  for (const d of ld.desks) {
+    if (ids.includes(d.id)) d.group_id = gid;
+  }
+  markDirty();
+  renderObjectList();
+  renderDesks();
+  edToast(`Сгруппировано: ${ids.length} мест`, 'success');
+}
+
+function ungroupSelected() {
+  if (!ld) return;
+  histSnapshot();
+  const ids = new Set(selectedDeskIds());
+  const gids = new Set(
+    (ld.desks || []).filter(d => ids.has(d.id) && d.group_id).map(d => d.group_id)
+  );
+  if (!gids.size) { edToast('Выбранные места не в группе', 'info'); return; }
+  let count = 0;
+  for (const d of ld.desks) {
+    if (d.group_id && gids.has(d.group_id)) { d.group_id = null; d.group_label = null; count++; }
+  }
+  if (count) { markDirty(); renderObjectList(); renderDesks(); }
+  edToast(`Разгруппировано: ${count} мест`, 'success');
+}
+
+function alignSelected(direction) {
+  if (!ld) return;
+  const desks = selectedDeskRecords().filter(d => !isDeskLocked(d));
+  if (desks.length < 2) { edToast('Выберите 2 или более места для выравнивания', 'info'); return; }
+  histSnapshot();
+  const minX = Math.min(...desks.map(d => d.x));
+  const minY = Math.min(...desks.map(d => d.y));
+  const maxX = Math.max(...desks.map(d => d.x + d.w));
+  const maxY = Math.max(...desks.map(d => d.y + d.h));
+  for (const d of desks) {
+    if (direction === 'left')   d.x = snapV(minX);
+    if (direction === 'right')  d.x = snapV(maxX - d.w);
+    if (direction === 'center') d.x = snapV((minX + maxX) / 2 - d.w / 2);
+    if (direction === 'top')    d.y = snapV(minY);
+    if (direction === 'bottom') d.y = snapV(maxY - d.h);
+    if (direction === 'middle') d.y = snapV((minY + maxY) / 2 - d.h / 2);
+  }
+  markDirty(); renderDesks(); renderSelection();
+}
+
+function distributeSelected(axis) {
+  if (!ld) return;
+  const desks = selectedDeskRecords().filter(d => !isDeskLocked(d));
+  if (desks.length < 3) { edToast('Выберите 3 или более места для распределения', 'info'); return; }
+  histSnapshot();
+  if (axis === 'h') {
+    const sorted = [...desks].sort((a, b) => (a.x + a.w / 2) - (b.x + b.w / 2));
+    const span = (sorted.at(-1).x + sorted.at(-1).w / 2) - (sorted[0].x + sorted[0].w / 2);
+    const step = span / (sorted.length - 1);
+    const startCx = sorted[0].x + sorted[0].w / 2;
+    for (let i = 1; i < sorted.length - 1; i++) {
+      sorted[i].x = snapV(startCx + i * step - sorted[i].w / 2);
+    }
+  } else {
+    const sorted = [...desks].sort((a, b) => (a.y + a.h / 2) - (b.y + b.h / 2));
+    const span = (sorted.at(-1).y + sorted.at(-1).h / 2) - (sorted[0].y + sorted[0].h / 2);
+    const step = span / (sorted.length - 1);
+    const startCy = sorted[0].y + sorted[0].h / 2;
+    for (let i = 1; i < sorted.length - 1; i++) {
+      sorted[i].y = snapV(startCy + i * step - sorted[i].h / 2);
+    }
+  }
+  markDirty(); renderDesks(); renderSelection();
+}
+
+function selectAll() {
+  if (!ld || ed.mode !== 'select') return;
+  const deskIds = (ld.desks || []).map(d => d.id);
+  if (!deskIds.length) return;
+  ed.selType = 'desk';
+  ed.selId = deskIds[0];
+  ed.multiDeskIds = deskIds.slice(1);
+  ed.multiStructKeys = [];
+  renderDesks();
+  renderSelection();
+  renderObjectList();
+  showPropsFor('desk', deskIds[0]);
 }
 
 function setBackgroundAdjustMode(active) {
@@ -3225,6 +4664,12 @@ function setMode(mode) {
     ed.drawing = null;
     const l = _layer('draw'); if (l) l.innerHTML = '';
   }
+  if (ed.boundaryDrag && mode !== 'boundary') {
+    ed.boundaryDrag = null;
+  }
+  if (mode !== 'door') {
+    ed.doorPreview = null;
+  }
   if (mode !== 'desk') {
     cancelDeskBlockPreview();
   }
@@ -3232,6 +4677,10 @@ function setMode(mode) {
     setBackgroundAdjustMode(false);
   }
   ed.mode = mode;
+
+  // Reset SVG cursor when leaving door mode
+  const svg = _svg();
+  if (svg && mode !== 'door') svg.style.cursor = '';
 
   document.querySelectorAll('.ed-mode-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.mode === mode);
@@ -3301,6 +4750,7 @@ async function edLoadFloor(floorId) {
       }
     }
 
+    histReset();
     ed.dirty = false;
     updateEditorUI();
     fitToScreen();
@@ -3467,13 +4917,255 @@ async function edSaveDraft(opts = {}) {
   }
 }
 
+/* ── Layout validation ───────────────────────────────────────────────────────
+ *  validateLayout() → array of { type:'error'|'warning', code, message,
+ *                                 objectType, objectId, relatedId? }
+ * ────────────────────────────────────────────────────────────────────────── */
+function validateLayout() {
+  const issues = [];
+  if (!ld) return issues;
+
+  const canvas   = getCanvasRect();
+  const desks    = ld.desks      || [];
+  const walls    = ld.walls      || [];
+  const parts    = ld.partitions || [];
+  const bounds   = ld.boundaries || [];
+  const doors    = ld.doors      || [];
+
+  // ── 1. At least one desk ─────────────────────────────────────────────────
+  if (desks.length === 0) {
+    issues.push({ type: 'error', code: 'no_desks',
+      message: 'На плане нет ни одного рабочего места',
+      objectType: null, objectId: null });
+  }
+
+  // ── 2. Duplicate labels ──────────────────────────────────────────────────
+  const labelMap = new Map();
+  for (const d of desks) {
+    const lbl = (d.label || '').trim();
+    if (!lbl) continue;
+    if (!labelMap.has(lbl)) labelMap.set(lbl, []);
+    labelMap.get(lbl).push(d);
+  }
+  for (const [lbl, dups] of labelMap) {
+    if (dups.length > 1) {
+      for (const d of dups) {
+        issues.push({ type: 'error', code: 'dup_label',
+          message: `Дублирующийся ярлык «${lbl}»`,
+          objectType: 'desk', objectId: d.id });
+      }
+    }
+  }
+
+  // ── 3. Doors without valid wall attachment ───────────────────────────────
+  const allStructIds = new Set([...walls.map(w => w.id), ...parts.map(p => p.id)]);
+  for (const door of doors) {
+    if (!isNewDoor(door)) continue;
+    if (!door.wallId || !allStructIds.has(door.wallId)) {
+      const lbl = door.wallId ? 'стена удалена' : 'без привязки';
+      issues.push({ type: 'warning', code: 'door_unattached',
+        message: `Дверь не привязана к стене (${lbl})`,
+        objectType: 'door', objectId: door.id });
+    }
+  }
+
+  // ── 4. Overlapping desks ─────────────────────────────────────────────────
+  const reportedPairs = new Set();
+  for (let i = 0; i < desks.length; i++) {
+    for (let j = i + 1; j < desks.length; j++) {
+      if (rectsOverlap(desks[i], desks[j])) {
+        const key = desks[i].id + ':' + desks[j].id;
+        if (!reportedPairs.has(key)) {
+          reportedPairs.add(key);
+          const l1 = desks[i].label || desks[i].id.slice(0, 6);
+          const l2 = desks[j].label || desks[j].id.slice(0, 6);
+          issues.push({ type: 'warning', code: 'desk_overlap',
+            message: `Пересечение мест: ${l1} и ${l2}`,
+            objectType: 'desk', objectId: desks[i].id, relatedId: desks[j].id });
+        }
+      }
+    }
+  }
+
+  // ── 5. Objects outside canvas bounds ────────────────────────────────────
+  const cx2 = canvas.x + canvas.w, cy2 = canvas.y + canvas.h;
+
+  for (const d of desks) {
+    if (d.x < canvas.x || d.y < canvas.y || d.x + d.w > cx2 || d.y + d.h > cy2) {
+      issues.push({ type: 'warning', code: 'out_of_bounds',
+        message: `Место «${d.label || d.id.slice(0, 6)}» вне рабочей области`,
+        objectType: 'desk', objectId: d.id });
+    }
+  }
+
+  const structEntries = [
+    ...walls.map(s   => ({ type: 'wall',      label: 'Стена',        el: s })),
+    ...parts.map(s   => ({ type: 'partition', label: 'Перегородка',  el: s })),
+    ...bounds.map(s  => ({ type: 'boundary',  label: 'Зона',         el: s })),
+  ];
+  for (const { type, label, el } of structEntries) {
+    if (!el.pts?.length) continue;
+    if (el.pts.some(p => p[0] < canvas.x || p[1] < canvas.y || p[0] > cx2 || p[1] > cy2)) {
+      issues.push({ type: 'warning', code: 'out_of_bounds',
+        message: `${label} частично вне рабочей области`,
+        objectType: type, objectId: el.id });
+    }
+  }
+
+  return issues;
+}
+
+/* ── Jump to object ──────────────────────────────────────────────────────── */
+function jumpToObject(type, id) {
+  if (!ld || !id) return;
+  selectObj(type, id);
+  let rect = null;
+  if (type === 'desk') {
+    const d = (ld.desks || []).find(x => x.id === id);
+    if (d) rect = { x: d.x, y: d.y, w: d.w, h: d.h };
+  } else if (type === 'door') {
+    const d = (ld.doors || []).find(x => x.id === id);
+    if (d && isNewDoor(d)) {
+      const hw = (d.width || 50) / 2;
+      rect = { x: d.cx - hw, y: d.cy - hw, w: d.width || 50, h: d.width || 50 };
+    }
+  } else {
+    const arr = structArrayByType(type);
+    const el = arr?.find(x => x.id === id);
+    if (el?.pts) {
+      const b = pointsBounds(el.pts);
+      if (b) rect = { x: b.minX, y: b.minY, w: b.maxX - b.minX, h: b.maxY - b.minY };
+    }
+  }
+  if (!rect) return;
+  // Zoom to show the object with generous padding
+  const dim = Math.max(rect.w, rect.h, 40);
+  const pad = dim * 2;
+  setVb(rect.x - pad, rect.y - pad, rect.w + pad * 2, rect.h + pad * 2);
+}
+
+/* ── Validation panel UI ─────────────────────────────────────────────────── */
+let _valOnPublish = null;  // callback set when panel is opened from publish flow
+
+function showValidationPanel(issues, onPublish) {
+  _valOnPublish = onPublish || null;
+
+  const errors   = issues.filter(i => i.type === 'error');
+  const warnings = issues.filter(i => i.type === 'warning');
+  const hasErrors = errors.length > 0;
+
+  // Title + subtitle
+  const titleEl = document.getElementById('ed-val-title');
+  const subtEl  = document.getElementById('ed-val-subtitle');
+  if (titleEl) {
+    titleEl.textContent = hasErrors
+      ? `Ошибки: ${errors.length}${warnings.length ? `, предупреждения: ${warnings.length}` : ''}`
+      : `Предупреждения: ${warnings.length}`;
+    titleEl.style.color = hasErrors ? 'var(--color-danger, #dc2626)' : '#b45309';
+  }
+  if (subtEl) {
+    subtEl.textContent = hasErrors
+      ? 'Исправьте ошибки перед публикацией.'
+      : 'Можно опубликовать, игнорируя предупреждения.';
+  }
+
+  // Issue list
+  const list = document.getElementById('ed-val-list');
+  if (list) {
+    list.innerHTML = '';
+
+    const ICONS = { error: '✖', warning: '⚠' };
+    const TYPE_LABELS = { desk: 'Место', door: 'Дверь', wall: 'Стена', partition: 'Перегородка', boundary: 'Зона' };
+
+    for (const issue of [...errors, ...warnings]) {
+      const row = document.createElement('div');
+      row.className = `ed-val-item ed-val-${issue.type}`;
+      const clickable = !!(issue.objectId);
+      if (clickable) row.classList.add('ed-val-clickable');
+
+      const typeTag = issue.objectType ? `<span class="ed-val-tag">${TYPE_LABELS[issue.objectType] || issue.objectType}</span>` : '';
+      row.innerHTML = `
+        <span class="ed-val-icon">${ICONS[issue.type]}</span>
+        <span class="ed-val-msg">${issue.message}${typeTag}</span>
+        ${clickable ? '<span class="ed-val-jump" title="Перейти к объекту">→</span>' : ''}
+      `;
+
+      if (clickable) {
+        row.addEventListener('click', () => {
+          hideValidationPanel();
+          jumpToObject(issue.objectType, issue.objectId);
+          // Also highlight related if overlap pair
+          if (issue.relatedId && issue.objectType === 'desk') {
+            ed.multiDeskIds = [issue.relatedId];
+            renderDesks();
+            renderSelection();
+          }
+        });
+      }
+      list.appendChild(row);
+    }
+
+    if (issues.length === 0) {
+      list.innerHTML = '<div class="ed-val-ok">✔ Ошибок не обнаружено — план готов к публикации.</div>';
+    }
+  }
+
+  // "Publish anyway" button — only when no hard errors and caller provided onPublish
+  const publishBtn = document.getElementById('ed-val-publish-anyway');
+  if (publishBtn) {
+    const show = !hasErrors && !!onPublish;
+    publishBtn.classList.toggle('ed-hidden', !show);
+  }
+
+  document.getElementById('ed-val-overlay')?.classList.remove('ed-hidden');
+}
+
+function hideValidationPanel() {
+  document.getElementById('ed-val-overlay')?.classList.add('ed-hidden');
+  _valOnPublish = null;
+}
+
+function initValidationPanel() {
+  document.getElementById('ed-val-close')?.addEventListener('click', hideValidationPanel);
+  document.getElementById('ed-val-cancel')?.addEventListener('click', hideValidationPanel);
+  document.getElementById('ed-val-overlay')?.addEventListener('click', (e) => {
+    if (e.target === document.getElementById('ed-val-overlay')) hideValidationPanel();
+  });
+  document.getElementById('ed-val-publish-anyway')?.addEventListener('click', () => {
+    hideValidationPanel();
+    if (_valOnPublish) _valOnPublish();
+  });
+  document.getElementById('ed-validate-btn')?.addEventListener('click', () => {
+    if (!ld) { edToast('Загрузите этаж перед проверкой', 'info'); return; }
+    const issues = validateLayout();
+    showValidationPanel(issues, null);
+  });
+}
+/* ─────────────────────────────────────────────────────────────────────────── */
+
 async function edPublish() {
   if (!ed.floorId) return;
   if (!ed.dirty && ed.status !== 'draft') {
     edToast('Нет черновика для публикации. Внесите изменения и сохраните.', 'info');
     return;
   }
+
+  // Validate before publishing
+  const issues = validateLayout();
+  const errors = issues.filter(i => i.type === 'error');
+  if (issues.length > 0) {
+    // If there are hard errors, show panel — user must fix them.
+    // If only warnings, show panel with "publish anyway" button.
+    showValidationPanel(issues, errors.length === 0 ? _doPublish : null);
+    return;
+  }
+
+  // No issues — proceed with confirmation
   if (!confirm('Опубликовать план? Клиенты увидят изменения.')) return;
+  await _doPublish();
+}
+
+async function _doPublish() {
   try {
     // Save first and stop if save failed.
     if (ed.dirty || ed.status !== 'draft') {
@@ -4233,6 +5925,8 @@ function updateEditorUI() {
   } else if (saveBtn) {
     saveBtn.textContent = 'Сохранить';
   }
+
+  updateEmptyState();
 }
 
 function markDirty() {
@@ -4252,8 +5946,8 @@ function initEditorKeyboard() {
     if (e.key === 'Alt') {
       if (!ed.altSnapOff) {
         ed.altSnapOff = true;
-        if (isDeskBlockMode() && ed.deskTool.preview) {
-          rebuildDeskBlockPreview(ed.deskTool.preview.current || ed.deskTool.preview.anchor);
+        if (isDeskMultiMode() && ed.deskTool.preview?._cursorPt) {
+          updateDeskFloatPreview(ed.deskTool.preview._cursorPt);
         }
         updateStatusBar();
       }
@@ -4263,8 +5957,8 @@ function initEditorKeyboard() {
       if (!ed.shiftDown) ed.shiftDown = true;
       if (!isDrawMode(ed.mode) && !ed.shiftFine) {
         ed.shiftFine = true;
-        if (isDeskBlockMode() && ed.deskTool.preview) {
-          rebuildDeskBlockPreview(ed.deskTool.preview.current || ed.deskTool.preview.anchor);
+        if (isDeskMultiMode() && ed.deskTool.preview?._cursorPt) {
+          updateDeskFloatPreview(ed.deskTool.preview._cursorPt);
         }
       }
       updateStatusBar();
@@ -4279,6 +5973,18 @@ function initEditorKeyboard() {
 
     if (e.code === 'Space') { e.preventDefault(); ed.spaceDown = true; return; }
 
+    // Ctrl/Cmd shortcuts
+    if (e.ctrlKey || e.metaKey) {
+      const k = e.key.toLowerCase();
+      if (k === 'z' && !e.shiftKey) { e.preventDefault(); histUndo(); return; }
+      if (k === 'z' &&  e.shiftKey) { e.preventDefault(); histRedo(); return; }
+      if (k === 'y')                { e.preventDefault(); histRedo(); return; }
+      if (k === 'd') { e.preventDefault(); duplicateSelected(); return; }
+      if (k === 'g' && !e.shiftKey) { e.preventDefault(); groupSelectedDesks(); return; }
+      if (k === 'g' &&  e.shiftKey) { e.preventDefault(); ungroupSelected(); return; }
+      if (k === 'a') { e.preventDefault(); selectAll(); return; }
+    }
+
     switch (e.key) {
       case 'v': case 'V': setMode('select');    break;
       case 'h': case 'H': setMode('pan');       break;
@@ -4288,6 +5994,42 @@ function initEditorKeyboard() {
       case 'o': case 'O': setMode('door');      break;
       case 'd': case 'D': setMode('desk');      break;
       case 'f': case 'F': fitToScreen();         break;
+      case 's': case 'S': {
+        // Toggle smart snap (objects + walls together)
+        const nextSnap = !(ed.snapToObjects && ed.snapToWalls);
+        ed.snapToObjects = nextSnap;
+        ed.snapToWalls = nextSnap;
+        $el('ed-snap-obj-btn')?.classList.toggle('active', nextSnap);
+        $el('ed-snap-wall-btn')?.classList.toggle('active', nextSnap);
+        edToast('Умная привязка: ' + (nextSnap ? 'вкл' : 'выкл'), 'info');
+        updateStatusBar();
+        break;
+      }
+      case 'r': case 'R':
+        if (ed.mode === 'desk') {
+          ed.deskTool.axis = ed.deskTool.axis === 'vertical' ? 'horizontal' : 'vertical';
+          _v('ed-desk-block-axis', ed.deskTool.axis);
+          if (ed.deskTool.preview?._cursorPt) {
+            updateDeskFloatPreview(ed.deskTool.preview._cursorPt);
+          }
+          syncDeskBulkControls();
+          renderDrawing();
+          updateStatusBar();
+          edToast(`Ориентация: ${ed.deskTool.axis === 'horizontal' ? 'горизонтально' : 'вертикально'}`, 'info');
+        } else if (ed.mode === 'door') {
+          ed.doorFlip = !ed.doorFlip;
+          renderDrawing();
+          updateStatusBar(); // update the flip direction indicator in hint
+        } else if (ed.mode === 'select' && ed.selType === 'door' && ed.selId) {
+          const door = (ld?.doors || []).find(x => x.id === ed.selId);
+          if (door && isNewDoor(door) && !door.locked) {
+            door.flip = !door.flip;
+            markDirty();
+            renderStructure();
+            showPropsFor('door', ed.selId);
+          }
+        }
+        break;
       case 'q': case 'Q':
         if (rotateDeskSelectionBy(e.shiftKey ? -1 : -5)) e.preventDefault();
         break;
@@ -4298,8 +6040,8 @@ function initEditorKeyboard() {
         ed.snapGrid = !ed.snapGrid;
         document.getElementById('ed-grid-rect')?.style.setProperty('display', ed.snapGrid ? '' : 'none');
         edToast('Сетка: ' + (ed.snapGrid ? 'вкл' : 'выкл'), 'info');
-        if (isDeskBlockMode() && ed.deskTool.preview) {
-          rebuildDeskBlockPreview(ed.deskTool.preview.current || ed.deskTool.preview.anchor);
+        if (isDeskMultiMode() && ed.deskTool.preview?._cursorPt) {
+          updateDeskFloatPreview(ed.deskTool.preview._cursorPt);
         }
         updateStatusBar();
         break;
@@ -4317,13 +6059,27 @@ function initEditorKeyboard() {
           break;
         }
         if (cancelDeskBlockPreview()) break;
-        if (ed.drawing) { ed.drawing = null; const l = _layer('draw'); if (l) l.innerHTML = ''; }
-        else if (ed.marquee) { ed.marquee = null; renderSelection(); }
+        // Area tool: cancel in-progress drag, stay in mode for next draw
+        if (ed.boundaryDrag) {
+          ed.boundaryDrag = null; renderDrawing(); updateStatusBar(); break;
+        }
+        // Line tools: cancel in-progress segment, stay in mode for next line
+        if (ed.drawing) {
+          ed.drawing = null; const l = _layer('draw'); if (l) l.innerHTML = ''; updateStatusBar(); break;
+        }
+        // Object tools (door, desk): Esc exits tool → select mode
+        if (OBJECT_TOOLS.includes(ed.mode)) {
+          if (ed.doorPreview) { ed.doorPreview = null; renderDrawing(); }
+          setMode('select'); break;
+        }
+        // Area/Line tools idle: Esc exits to select
+        if ([...LINE_TOOLS, ...AREA_TOOLS].includes(ed.mode)) { setMode('select'); break; }
+        if (ed.marquee) { ed.marquee = null; renderSelection(); }
         else deselect();
         break;
       case 'Enter':
         if (commitDeskBlockPreview()) break;
-        if (ed.drawing) finishDrawing(ed.mode === 'boundary');
+        if (ed.drawing) finishDrawing(false);
         break;
       case 'Delete': case 'Backspace':
         if (hasMultiDeskSelection() && hasMultiStructSelection()) {
@@ -4352,8 +6108,8 @@ function initEditorKeyboard() {
   document.addEventListener('keyup', e => {
     if (e.key === 'Alt') {
       ed.altSnapOff = false;
-      if (isDeskBlockMode() && ed.deskTool.preview) {
-        rebuildDeskBlockPreview(ed.deskTool.preview.current || ed.deskTool.preview.anchor);
+      if (isDeskMultiMode() && ed.deskTool.preview?._cursorPt) {
+        updateDeskFloatPreview(ed.deskTool.preview._cursorPt);
       }
       updateStatusBar();
       return;
@@ -4361,8 +6117,8 @@ function initEditorKeyboard() {
     if (e.key === 'Shift') {
       ed.shiftDown = false;
       ed.shiftFine = false;
-      if (isDeskBlockMode() && ed.deskTool.preview) {
-        rebuildDeskBlockPreview(ed.deskTool.preview.current || ed.deskTool.preview.anchor);
+      if (isDeskMultiMode() && ed.deskTool.preview?._cursorPt) {
+        updateDeskFloatPreview(ed.deskTool.preview._cursorPt);
       }
       updateStatusBar();
       return;
@@ -4378,8 +6134,8 @@ function initEditorKeyboard() {
     ed.altSnapOff = false;
     ed.shiftFine = false;
     ed.shiftDown = false;
-    if (isDeskBlockMode() && ed.deskTool.preview) {
-      rebuildDeskBlockPreview(ed.deskTool.preview.current || ed.deskTool.preview.anchor);
+    if (isDeskMultiMode() && ed.deskTool.preview?._cursorPt) {
+      updateDeskFloatPreview(ed.deskTool.preview._cursorPt);
     }
     updateStatusBar();
   });
@@ -4471,25 +6227,38 @@ function populateEdFloorSelect(floors, offices) {
 
 function initDeskBulkControls() {
   const apply = () => {
-    const nextPlaceMode = $el('ed-desk-place-mode')?.value === 'block' ? 'block' : 'single';
-    const wasBlock = ed.deskTool.placeMode === 'block';
+    const rawMode = $el('ed-desk-place-mode')?.value || 'single';
+    const nextMode = ['single', 'row', 'block'].includes(rawMode) ? rawMode : 'single';
+    const wasMulti = isDeskMultiMode();
     const baseSize = baseDeskSize();
     const maxW = Math.max(120, baseSize.w * 8);
     const maxH = Math.max(90, baseSize.h * 8);
 
-    ed.deskTool.placeMode = nextPlaceMode;
-    ed.deskTool.pattern = $el('ed-desk-block-pattern')?.value === 'double' ? 'double' : 'rows';
+    ed.deskTool.placeMode = nextMode;
     ed.deskTool.axis = $el('ed-desk-block-axis')?.value === 'vertical' ? 'vertical' : 'horizontal';
     ed.deskTool.deskW = clampNum($el('ed-desk-width')?.value, 4, maxW, ed.deskTool.deskW ?? baseSize.w);
     ed.deskTool.deskH = clampNum($el('ed-desk-height')?.value, 4, maxH, ed.deskTool.deskH ?? baseSize.h);
-    ed.deskTool.seatsPerRow = clampInt($el('ed-desk-seats-per-row')?.value, 1, 100, ed.deskTool.seatsPerRow || 6);
+    ed.deskTool.colCount = clampInt($el('ed-desk-col-count')?.value, 1, 100, ed.deskTool.colCount || 6);
     ed.deskTool.rowCount = clampInt($el('ed-desk-row-count')?.value, 1, 50, ed.deskTool.rowCount || 2);
-    ed.deskTool.pairCount = clampInt($el('ed-desk-pair-count')?.value, 1, 25, ed.deskTool.pairCount || 1);
+    const rawDeskGap = $el('ed-desk-gap')?.value;
+    ed.deskTool.deskGap = rawDeskGap !== '' && rawDeskGap !== undefined ? clampNum(rawDeskGap, 0, 200, null) : null;
+    const rawRowGap = $el('ed-desk-row-gap')?.value;
+    ed.deskTool.rowGap = rawRowGap !== '' && rawRowGap !== undefined ? clampNum(rawRowGap, 0, 200, null) : null;
+    ed.deskTool.groupLabel = ($el('ed-desk-group-label')?.value || '').trim();
 
-    if (wasBlock && ed.deskTool.placeMode !== 'block') {
+    // Numbering scheme
+    const rawScheme = $el('ed-desk-num-scheme')?.value || 'D-N';
+    ed.deskTool.numScheme = ['D-N', 'A-N', 'N', 'Rm-N', 'custom'].includes(rawScheme) ? rawScheme : 'D-N';
+    ed.deskTool.numPrefix = ($el('ed-desk-num-prefix')?.value || '').trim();
+    const rawStart = $el('ed-desk-num-start')?.value;
+    const parsedStart = rawStart !== '' && rawStart !== undefined ? parseInt(rawStart, 10) : NaN;
+    ed.deskTool.numStart = Number.isFinite(parsedStart) && parsedStart >= 1 ? parsedStart : null;
+    $el('ed-desk-num-prefix-field')?.classList.toggle('ed-hidden', ed.deskTool.numScheme !== 'custom');
+
+    if (wasMulti && !isDeskMultiMode()) {
       cancelDeskBlockPreview();
-    } else if (ed.deskTool.placeMode === 'block' && ed.deskTool.preview) {
-      rebuildDeskBlockPreview(ed.deskTool.preview.current || ed.deskTool.preview.anchor);
+    } else if (isDeskMultiMode() && ed.deskTool.preview?._cursorPt) {
+      updateDeskFloatPreview(ed.deskTool.preview._cursorPt);
     }
 
     syncDeskBulkControls();
@@ -4497,11 +6266,16 @@ function initDeskBulkControls() {
     renderDrawing();
   };
 
-  ['ed-desk-place-mode', 'ed-desk-block-pattern', 'ed-desk-block-axis', 'ed-desk-width', 'ed-desk-height', 'ed-desk-seats-per-row', 'ed-desk-row-count', 'ed-desk-pair-count']
+  ['ed-desk-place-mode', 'ed-desk-block-axis', 'ed-desk-width', 'ed-desk-height',
+   'ed-desk-col-count', 'ed-desk-row-count', 'ed-desk-gap', 'ed-desk-row-gap', 'ed-desk-group-label',
+   'ed-desk-num-scheme', 'ed-desk-num-prefix', 'ed-desk-num-start']
     .forEach(id => {
       $el(id)?.addEventListener('change', apply);
       $el(id)?.addEventListener('input', apply);
     });
+
+  // Renumber button in multi-desk panel
+  $el('ep-renumber-btn')?.addEventListener('click', renumberSelected);
 
   syncDeskBulkControls();
 }
@@ -4526,6 +6300,8 @@ function initFloorEditor() {
     }
     acquireLock();
   });
+  $el('ed-undo-btn')?.addEventListener('click', histUndo);
+  $el('ed-redo-btn')?.addEventListener('click', histRedo);
   $el('ed-fit-btn')?.addEventListener('click', fitToScreen);
   $el('ed-sync-bg-btn')?.addEventListener('click', syncCanvasToBackground);
   $el('ed-bg-adjust-btn')?.addEventListener('click', toggleBackgroundAdjustMode);
@@ -4535,9 +6311,19 @@ function initFloorEditor() {
     ed.snapGrid = !ed.snapGrid;
     document.getElementById('ed-grid-rect')?.style.setProperty('display', ed.snapGrid ? '' : 'none');
     $el('ed-grid-btn')?.classList.toggle('active', ed.snapGrid);
-    if (isDeskBlockMode() && ed.deskTool.preview) {
-      rebuildDeskBlockPreview(ed.deskTool.preview.current || ed.deskTool.preview.anchor);
+    if (isDeskMultiMode() && ed.deskTool.preview?._cursorPt) {
+      updateDeskFloatPreview(ed.deskTool.preview._cursorPt);
     }
+    updateStatusBar();
+  });
+  $el('ed-snap-obj-btn')?.addEventListener('click', () => {
+    ed.snapToObjects = !ed.snapToObjects;
+    $el('ed-snap-obj-btn')?.classList.toggle('active', ed.snapToObjects);
+    updateStatusBar();
+  });
+  $el('ed-snap-wall-btn')?.addEventListener('click', () => {
+    ed.snapToWalls = !ed.snapToWalls;
+    $el('ed-snap-wall-btn')?.classList.toggle('active', ed.snapToWalls);
     updateStatusBar();
   });
   $el('ed-save-btn')?.addEventListener('click', edSaveDraft);
@@ -4554,11 +6340,14 @@ function initFloorEditor() {
   // SVG canvas
   const svg = _svg();
   if (svg) {
-    svg.addEventListener('pointerdown', onSvgPointerDown);
-    svg.addEventListener('pointermove', onSvgPointerMove);
-    svg.addEventListener('pointerup',   onSvgPointerUp);
-    svg.addEventListener('click',       onSvgClick);
-    svg.addEventListener('dblclick',    onSvgDblClick);
+    svg.addEventListener('pointerdown',  onSvgPointerDown);
+    svg.addEventListener('pointermove',  onSvgPointerMove);
+    svg.addEventListener('pointerup',    onSvgPointerUp);
+    svg.addEventListener('click',        onSvgClick);
+    svg.addEventListener('dblclick',     onSvgDblClick);
+    svg.addEventListener('pointerleave', () => {
+      if (ed.doorPreview) { ed.doorPreview = null; renderDrawing(); }
+    });
     svg.addEventListener('wheel',       onWheelZoom, { passive: false });
   }
 
@@ -4615,10 +6404,124 @@ function initFloorEditor() {
 
   initPropsListeners();
   initDeskBulkControls();
+  initValidationPanel();
   initEditorKeyboard();
   initCollapsePanels();
+  initEditorTooltips();
+  initOnboarding();
   updateEditorUI();
   updateStatusBar();
   updateEditorKpis();
   updateLockUI();
+}
+
+/* ── Empty state ─────────────────────────────────────────────────────────── */
+
+function updateEmptyState() {
+  const el = $el('ed-empty-state');
+  if (!el) return;
+  el.classList.toggle('ed-hidden', !!ed.floorId);
+}
+
+/* ── Floating tooltips ───────────────────────────────────────────────────── */
+
+function initEditorTooltips() {
+  const tip = $el('ed-tip');
+  if (!tip) return;
+
+  let hideTimer = null;
+
+  document.querySelectorAll('[data-ed-tip]').forEach(btn => {
+    btn.addEventListener('mouseenter', e => {
+      clearTimeout(hideTimer);
+      const titleText = btn.dataset.edTip || '';
+      const descText  = btn.dataset.edTipDesc || '';
+      $el('ed-tip-title').textContent = titleText;
+      $el('ed-tip-desc').textContent  = descText;
+      positionTip(tip, e);
+      tip.classList.add('visible');
+    });
+    btn.addEventListener('mousemove', e => positionTip(tip, e));
+    btn.addEventListener('mouseleave', () => {
+      hideTimer = setTimeout(() => tip.classList.remove('visible'), 80);
+    });
+  });
+}
+
+function positionTip(tip, e) {
+  const GAP = 10;
+  const tw = tip.offsetWidth  || 260;
+  const th = tip.offsetHeight || 60;
+  let x = e.clientX + GAP;
+  let y = e.clientY + GAP + 18;
+  if (x + tw > window.innerWidth  - 8) x = e.clientX - tw - GAP;
+  if (y + th > window.innerHeight - 8) y = e.clientY - th - GAP;
+  tip.style.left = x + 'px';
+  tip.style.top  = y + 'px';
+}
+
+/* ── Onboarding ──────────────────────────────────────────────────────────── */
+
+const ONBOARDING_KEY = 'ed_onboarded_v1';
+
+function initOnboarding() {
+  // Wire empty-state buttons
+  $el('ed-empty-upload-btn')?.addEventListener('click', () => {
+    // Open the upload plan modal from admin.js context (shared global)
+    if (typeof openUploadPlanModal === 'function') {
+      openUploadPlanModal(ed.floorId || null);
+    } else {
+      // Fallback: open floor select list or show admin panel
+      const sel = $el('ed-floor-select');
+      if (sel) sel.focus();
+    }
+  });
+
+  $el('ed-empty-tour-btn')?.addEventListener('click', showEdOnboarding);
+  $el('ed-ob-skip')?.addEventListener('click', hideEdOnboarding);
+  $el('ed-ob-prev')?.addEventListener('click', () => setObStep(_obStep - 1));
+  $el('ed-ob-next')?.addEventListener('click', () => {
+    if (_obStep < 2) {
+      setObStep(_obStep + 1);
+    } else {
+      hideEdOnboarding();
+    }
+  });
+  $el('ed-onboarding-overlay')?.addEventListener('click', e => {
+    if (e.target?.id === 'ed-onboarding-overlay') hideEdOnboarding();
+  });
+
+  if (!localStorage.getItem(ONBOARDING_KEY)) {
+    showEdOnboarding();
+  }
+}
+
+let _obStep = 0;
+
+function showEdOnboarding() {
+  _obStep = 0;
+  setObStep(0);
+  $el('ed-onboarding-overlay')?.classList.remove('ed-hidden');
+}
+
+function hideEdOnboarding() {
+  $el('ed-onboarding-overlay')?.classList.add('ed-hidden');
+  localStorage.setItem(ONBOARDING_KEY, '1');
+}
+
+function setObStep(step) {
+  const total = 3;
+  _obStep = Math.max(0, Math.min(total - 1, step));
+
+  document.querySelectorAll('.ed-ob-slide').forEach(s => {
+    s.classList.toggle('active', Number(s.dataset.step) === _obStep);
+  });
+  document.querySelectorAll('.ed-ob-dot').forEach(d => {
+    d.classList.toggle('active', Number(d.dataset.step) === _obStep);
+  });
+
+  const prevBtn = $el('ed-ob-prev');
+  const nextBtn = $el('ed-ob-next');
+  if (prevBtn) prevBtn.disabled = _obStep === 0;
+  if (nextBtn) nextBtn.textContent = _obStep === total - 1 ? 'Готово ✓' : 'Далее →';
 }

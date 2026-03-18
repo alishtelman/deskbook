@@ -264,6 +264,12 @@ class AnalyticsResponse(BaseModel):
     occupancy_by_office: list[dict]
     top_desks: list[DeskStat]
     top_users: list[UserStat]
+    # Trend data (delta vs previous period, None if no previous data)
+    trend_today: Optional[float] = None
+    trend_active: Optional[float] = None
+    trend_cancelled: Optional[float] = None
+    trend_noshow: Optional[float] = None
+    period: str = "day"
 
 
 class Message(BaseModel):
@@ -309,6 +315,7 @@ class UserResponse(BaseModel):
     phone: Optional[str] = None
     user_status: str = "available"
     is_active: bool = True
+    avatar_url: Optional[str] = None
 
 
 class Token(BaseModel):
@@ -326,6 +333,7 @@ class UserPublic(BaseModel):
     phone: Optional[str] = None
     user_status: str = "available"
     is_active: bool = True
+    avatar_url: Optional[str] = None
 
 
 class UserLocation(BaseModel):
@@ -354,6 +362,10 @@ class UserProfileUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 
 class DepartmentCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+
+
+class DepartmentUpdate(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
 
 

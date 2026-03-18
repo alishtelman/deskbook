@@ -56,6 +56,10 @@
           <i data-lucide="layers" style="width:15px;height:15px"></i>
           Этажи
         </button>
+        <button class="nav-item" data-tab="desks">
+          <i data-lucide="layout-grid" style="width:15px;height:15px"></i>
+          Места
+        </button>
         <button class="nav-item" data-tab="editor">
           <i data-lucide="pencil-ruler" style="width:15px;height:15px"></i>
           Редактор
@@ -91,13 +95,23 @@
     <main class="main-content">
       <div class="main-toolbar">
         <button id="admin-sidebar-toggle" class="main-sidebar-toggle" type="button" title="Скрыть меню" aria-expanded="true">☰</button>
+        <nav id="admin-breadcrumbs" class="admin-breadcrumbs" aria-label="Навигация"></nav>
       </div>
 
       <!-- Offices tab -->
       <div id="tab-offices" class="tab-content">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
           <h2 style="font-size:20px;font-weight:700">Офисы</h2>
-          <button id="refresh-offices" class="btn btn-secondary btn-sm">Обновить</button>
+          <div style="display:flex;gap:8px;align-items:center">
+            <div class="adm-search-wrap">
+              <i data-lucide="search" style="width:13px;height:13px"></i>
+              <input id="offices-search" type="text" placeholder="Поиск..." autocomplete="off">
+            </div>
+            <button id="refresh-offices" class="btn btn-ghost btn-sm adm-refresh-btn" title="Обновить"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i></button>
+            <button id="open-office-modal" class="btn btn-primary btn-sm">
+              <i data-lucide="plus" style="width:14px;height:14px"></i> Добавить
+            </button>
+          </div>
         </div>
         <div class="card" style="overflow:hidden">
           <div class="table-wrapper">
@@ -107,37 +121,41 @@
                   <th>#</th>
                   <th>Название</th>
                   <th>Адрес</th>
+                  <th style="text-align:center">Этажей</th>
+                  <th style="text-align:center">Мест</th>
                   <th>Действия</th>
                 </tr>
               </thead>
               <tbody id="offices-body">
-                <tr><td colspan="4" class="empty">Загрузка...</td></tr>
+                <tr><td colspan="6" class="empty">Загрузка...</td></tr>
               </tbody>
             </table>
           </div>
           <div id="offices-pagination" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border);font-size:13px"></div>
         </div>
-        <div class="form-panel">
-          <h3>Добавить офис</h3>
-          <div class="grid-2" style="gap:12px">
-            <div class="field">
-              <label for="office-name">Название</label>
-              <input id="office-name" type="text" placeholder="Главный офис">
-            </div>
-            <div class="field">
-              <label for="office-address">Адрес</label>
-              <input id="office-address" type="text" placeholder="ул. Ленина, 1">
-            </div>
-          </div>
-          <button id="create-office-btn" class="btn btn-primary" style="margin-top:16px">Добавить офис</button>
-        </div>
       </div>
 
       <!-- Floors tab -->
       <div id="tab-floors" class="tab-content hidden">
+        <div id="floors-filter-badge" class="bc-filter-badge" style="display:none"></div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
           <h2 style="font-size:20px;font-weight:700">Этажи</h2>
-          <button id="refresh-floors" class="btn btn-secondary btn-sm">Обновить</button>
+          <div style="display:flex;gap:8px;align-items:center">
+            <div class="adm-search-wrap">
+              <i data-lucide="search" style="width:13px;height:13px"></i>
+              <input id="floors-search" type="text" placeholder="Поиск..." autocomplete="off">
+            </div>
+            <select id="floors-office-filter" class="adm-filter-select">
+              <option value="">Все офисы</option>
+            </select>
+            <button id="refresh-floors" class="btn btn-ghost btn-sm adm-refresh-btn" title="Обновить"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i></button>
+            <button id="open-upload-plan-modal" class="btn btn-secondary btn-sm">
+              <i data-lucide="image" style="width:14px;height:14px"></i> Загрузить план
+            </button>
+            <button id="open-floor-modal" class="btn btn-primary btn-sm">
+              <i data-lucide="plus" style="width:14px;height:14px"></i> Добавить
+            </button>
+          </div>
         </div>
         <div class="card" style="overflow:hidden;margin-bottom:16px">
           <div class="table-wrapper">
@@ -156,36 +174,44 @@
           </div>
           <div id="floors-pagination" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border);font-size:13px"></div>
         </div>
-        <div class="form-panel">
-          <h3>Добавить этаж</h3>
-          <div class="grid-2" style="gap:12px">
-            <div class="field">
-              <label for="floor-office-select">Офис</label>
-              <select id="floor-office-select"><option value="">Выберите офис</option></select>
-            </div>
-            <div class="field">
-              <label for="floor-name">Название</label>
-              <input id="floor-name" type="text" placeholder="Этаж 1">
-            </div>
-          </div>
-          <button id="create-floor-btn" class="btn btn-primary" style="margin-top:16px">Добавить этаж</button>
-        </div>
-        <div class="form-panel" style="margin-top:12px">
-          <h3>Загрузить план этажа (PNG / SVG)</h3>
-          <div class="grid-2" style="gap:12px">
-            <div class="field">
-              <label for="plan-floor-select">Этаж</label>
-              <select id="plan-floor-select"><option value="">Выберите этаж</option></select>
-            </div>
-            <div class="field">
-              <label for="plan-file">Файл плана (PNG / SVG)</label>
-              <input id="plan-file" type="file" accept="image/png,image/svg+xml,image/jpeg">
-            </div>
-          </div>
-          <button id="upload-plan-btn" class="btn btn-primary" style="margin-top:16px">Загрузить план</button>
-        </div>
+      </div>
 
-        <!-- Планировка управляется через вкладку «Редактор» -->
+      <!-- Desks tab -->
+      <div id="tab-desks" class="tab-content hidden">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+          <h2 style="font-size:20px;font-weight:700">Рабочие места</h2>
+          <div style="display:flex;gap:8px;align-items:center">
+            <div class="adm-search-wrap">
+              <i data-lucide="search" style="width:13px;height:13px"></i>
+              <input id="desks-search" type="text" placeholder="Поиск по метке..." autocomplete="off">
+            </div>
+            <select id="desks-floor-filter" class="adm-filter-select">
+              <option value="">Все этажи</option>
+            </select>
+            <button id="refresh-desks" class="btn btn-ghost btn-sm adm-refresh-btn" title="Обновить"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i></button>
+          </div>
+        </div>
+        <div class="card" style="overflow:hidden">
+          <div class="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Этаж</th>
+                  <th>Метка</th>
+                  <th>Тип</th>
+                  <th>Пространство</th>
+                  <th>Привязан к</th>
+                  <th>Действия</th>
+                </tr>
+              </thead>
+              <tbody id="desks-body">
+                <tr><td colspan="7" class="empty">Загрузка...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div id="desks-pagination" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border);font-size:13px"></div>
+        </div>
       </div>
 
       <!-- Floor Editor tab -->
@@ -204,7 +230,12 @@
               <button class="ed-btn ed-btn-ghost" id="ed-lock-btn" title="Захватить редактирование">Захватить</button>
             </div>
             <div id="ed-actions">
+              <button class="ed-btn ed-btn-ghost ed-btn-icon ed-hist-btn" id="ed-undo-btn" title="Отменить (Ctrl+Z)" disabled>↩</button>
+              <button class="ed-btn ed-btn-ghost ed-btn-icon ed-hist-btn" id="ed-redo-btn" title="Вернуть (Ctrl+Shift+Z)" disabled>↪</button>
+              <div class="ed-toolbar-sep"></div>
               <button class="ed-btn ed-btn-ghost ed-btn-icon" id="ed-grid-btn" title="Сетка (G)">⊞</button>
+              <button class="ed-btn ed-btn-ghost ed-snap-toggle active" id="ed-snap-obj-btn" title="Привязка к объектам (edges/centers)">⊟ Объекты</button>
+              <button class="ed-btn ed-btn-ghost ed-snap-toggle active" id="ed-snap-wall-btn" title="Привязка к стенам">⊣ Стены</button>
               <button class="ed-btn ed-btn-ghost" id="ed-fit-btn" title="По размеру (F)">По размеру</button>
               <button class="ed-btn ed-btn-ghost" id="ed-sync-bg-btn" title="Подогнать SVG под фон">Фон = SVG</button>
               <button class="ed-btn ed-btn-ghost" id="ed-bg-adjust-btn" title="Подвинуть / масштабировать фон">Правка фона</button>
@@ -214,6 +245,7 @@
               <button class="ed-btn ed-btn-ghost" id="ed-history-btn">История</button>
               <div class="ed-toolbar-sep"></div>
               <button class="ed-btn ed-btn-primary" id="ed-save-btn" disabled>Сохранить</button>
+              <button class="ed-btn ed-btn-ghost" id="ed-validate-btn" title="Проверить план перед публикацией">Проверить</button>
               <button class="ed-btn ed-btn-green" id="ed-publish-btn" disabled>Опубликовать</button>
               <button class="ed-btn ed-btn-danger" id="ed-discard-btn" disabled>Отменить</button>
             </div>
@@ -222,18 +254,32 @@
           <div class="ed-toolbar-row ed-toolbar-row-secondary">
             <div id="ed-modes">
               <div class="ed-mode-group">
-                <button class="ed-mode-btn active" data-mode="select" title="Выбор (V)">Выбор <span class="kbd">V</span></button>
-                <button class="ed-mode-btn" data-mode="pan" title="Рука (H)">Панорама <span class="kbd">H</span></button>
+                <button class="ed-mode-btn active" data-mode="select"
+                  data-ed-tip="Выбор и перемещение"
+                  data-ed-tip-desc="Клик — выбрать объект; Shift+клик или рамка — мультивыбор; тащи — перемещение; круглая ручка — поворот">Выбор <span class="kbd">V</span></button>
+                <button class="ed-mode-btn" data-mode="pan"
+                  data-ed-tip="Панорамирование"
+                  data-ed-tip-desc="Тащи для панорамирования холста; колесо мыши — масштаб; Пробел+тащи работает в любом режиме"><i data-lucide="hand" style="width:13px;height:13px;pointer-events:none"></i> Рука <span class="kbd">H</span></button>
               </div>
               <div class="ed-toolbar-sep"></div>
               <div class="ed-mode-group">
-                <button class="ed-mode-btn" data-mode="wall" title="Стена (W)">Стена <span class="kbd">W</span></button>
-                <button class="ed-mode-btn" data-mode="boundary" title="Граница (B)">Зона <span class="kbd">B</span></button>
-                <button class="ed-mode-btn" data-mode="partition" title="Перегородка (P)">Перегородка <span class="kbd">P</span></button>
-                <button class="ed-mode-btn" data-mode="door" title="Дверь (O)">Дверь <span class="kbd">O</span></button>
+                <button class="ed-mode-btn" data-mode="wall"
+                  data-ed-tip="Стена"
+                  data-ed-tip-desc="Клик — добавить точку; Shift — угол 45°; Enter или двойной клик — завершить; Esc — отменить">Стена <span class="kbd">W</span></button>
+                <button class="ed-mode-btn" data-mode="boundary"
+                  data-ed-tip="Зона / помещение"
+                  data-ed-tip-desc="Тащите мышью — нарисовать прямоугольную зону; Esc — выйти">Зона <span class="kbd">B</span></button>
+                <button class="ed-mode-btn" data-mode="partition"
+                  data-ed-tip="Перегородка"
+                  data-ed-tip-desc="Лёгкая разделительная линия. Клик — точка; Shift — угол 45°; Enter — завершить; Esc — отменить">Перегородка <span class="kbd">P</span></button>
+                <button class="ed-mode-btn" data-mode="door"
+                  data-ed-tip="Дверь"
+                  data-ed-tip-desc="Наведите на стену и кликните — вставить дверь. R — сменить сторону открытия. Esc — отмена">Дверь <span class="kbd">O</span></button>
               </div>
               <div class="ed-toolbar-sep"></div>
-              <button class="ed-mode-btn" data-mode="desk" title="Стол (D)">Место <span class="kbd">D</span></button>
+              <button class="ed-mode-btn" data-mode="desk"
+                data-ed-tip="Рабочее место"
+                data-ed-tip-desc="Клик по холсту — поставить одно место; выберите «Блок» в панели ниже для расстановки группами">Место <span class="kbd">D</span></button>
             </div>
 
             <div class="ed-kpis">
@@ -261,14 +307,8 @@
               <label for="ed-desk-place-mode">Вставка</label>
               <select id="ed-desk-place-mode">
                 <option value="single">Одиночно</option>
+                <option value="row">Ряд</option>
                 <option value="block">Блок</option>
-              </select>
-            </div>
-            <div class="ed-bulk-field">
-              <label for="ed-desk-block-pattern">Шаблон</label>
-              <select id="ed-desk-block-pattern">
-                <option value="rows">Ряды</option>
-                <option value="double">Двойной ряд</option>
               </select>
             </div>
             <div class="ed-bulk-field">
@@ -279,26 +319,53 @@
               </select>
             </div>
             <div class="ed-bulk-field">
-              <label for="ed-desk-width">Ширина места</label>
+              <label for="ed-desk-width">Ширина</label>
               <input id="ed-desk-width" type="number" min="4" step="1" value="28">
             </div>
             <div class="ed-bulk-field">
-              <label for="ed-desk-height">Высота места</label>
+              <label for="ed-desk-height">Высота</label>
               <input id="ed-desk-height" type="number" min="4" step="1" value="16">
             </div>
-            <div class="ed-bulk-field">
-              <label for="ed-desk-seats-per-row">Мест в ряду</label>
-              <input id="ed-desk-seats-per-row" type="number" min="1" max="100" value="6">
+            <div class="ed-bulk-field ed-hidden" id="ed-desk-col-count-field">
+              <label for="ed-desk-col-count">Мест в ряду</label>
+              <input id="ed-desk-col-count" type="number" min="1" max="100" value="6">
             </div>
-            <div class="ed-bulk-field" id="ed-desk-rows-field">
+            <div class="ed-bulk-field ed-hidden" id="ed-desk-row-count-field">
               <label for="ed-desk-row-count">Рядов</label>
               <input id="ed-desk-row-count" type="number" min="1" max="50" value="2">
             </div>
-            <div class="ed-bulk-field ed-hidden" id="ed-desk-pairs-field">
-              <label for="ed-desk-pair-count">Пар</label>
-              <input id="ed-desk-pair-count" type="number" min="1" max="25" value="1">
+            <div class="ed-bulk-field ed-hidden" id="ed-desk-gap-field">
+              <label for="ed-desk-gap">Зазор между местами</label>
+              <input id="ed-desk-gap" type="number" min="0" step="1" placeholder="авто">
             </div>
-            <div class="ed-bulk-note" id="ed-desk-bulk-note">Режим блока: клик + drag для превью, затем клик для подтверждения, Esc — отмена</div>
+            <div class="ed-bulk-field ed-hidden" id="ed-desk-row-gap-field">
+              <label for="ed-desk-row-gap">Зазор между рядами</label>
+              <input id="ed-desk-row-gap" type="number" min="0" step="1" placeholder="авто">
+            </div>
+            <div class="ed-bulk-field ed-hidden" id="ed-desk-group-label-field">
+              <label for="ed-desk-group-label">Название группы</label>
+              <input id="ed-desk-group-label" type="text" maxlength="80" placeholder="Например: Open Space A">
+            </div>
+            <div class="ed-bulk-sep"></div>
+            <div class="ed-bulk-field">
+              <label for="ed-desk-num-scheme">Нумерация</label>
+              <select id="ed-desk-num-scheme">
+                <option value="D-N">D-1, D-2…</option>
+                <option value="A-N">A-1, A-2…</option>
+                <option value="N">1, 2, 3…</option>
+                <option value="Rm-N">Rm-1, Rm-2…</option>
+                <option value="custom">Префикс…</option>
+              </select>
+            </div>
+            <div class="ed-bulk-field ed-hidden" id="ed-desk-num-prefix-field">
+              <label for="ed-desk-num-prefix">Префикс</label>
+              <input id="ed-desk-num-prefix" type="text" maxlength="20" placeholder="Зал-А">
+            </div>
+            <div class="ed-bulk-field">
+              <label for="ed-desk-num-start">Начать с №</label>
+              <input id="ed-desk-num-start" type="number" min="1" step="1" placeholder="авто">
+            </div>
+            <div class="ed-bulk-note" id="ed-desk-bulk-note"></div>
             <div class="ed-bulk-conflicts" id="ed-desk-bulk-conflicts" aria-live="polite"></div>
           </div>
         </div>
@@ -351,6 +418,27 @@
               <g id="ed-layer-sel"></g>
             </svg>
 
+            <!-- Empty state (shown when no floor selected) -->
+            <div id="ed-empty-state">
+              <div class="ed-empty-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/>
+                  <line x1="9" y1="3" x2="9" y2="18"/>
+                  <line x1="15" y1="6" x2="15" y2="21"/>
+                </svg>
+              </div>
+              <h3 class="ed-empty-title">Редактор плана этажа</h3>
+              <p class="ed-empty-desc">Выберите этаж в списке выше, затем загрузите<br>план (PNG/SVG) как фон для расстановки мест.</p>
+              <div class="ed-empty-actions">
+                <button class="ed-btn ed-btn-primary" id="ed-empty-upload-btn">
+                  <i data-lucide="upload" style="width:15px;height:15px"></i> Загрузить план
+                </button>
+                <button class="ed-btn ed-btn-ghost" id="ed-empty-tour-btn">
+                  <i data-lucide="graduation-cap" style="width:15px;height:15px"></i> Обучение
+                </button>
+              </div>
+            </div>
+
             <!-- Minimap -->
             <div id="ed-minimap">
               <svg id="ed-minimap-svg" xmlns="http://www.w3.org/2000/svg"></svg>
@@ -388,38 +476,10 @@
               <!-- Desk props -->
               <div id="ed-props-desk" class="ed-hidden">
                 <div id="ep-single-desk-fields">
+                  <!-- Identity -->
                   <div class="ed-field">
                     <label>Метка</label>
                     <input type="text" id="ep-label" maxlength="40">
-                  </div>
-                  <div class="ed-field">
-                    <label>Имя / описание</label>
-                    <input type="text" id="ep-name" maxlength="120" placeholder="Необязательно">
-                  </div>
-                  <div class="ed-field">
-                    <label>Команда</label>
-                    <input type="text" id="ep-team" maxlength="120">
-                  </div>
-                  <div class="ed-field">
-                    <label>Отдел</label>
-                    <input type="text" id="ep-dept" maxlength="120">
-                  </div>
-                  <div class="ed-prop-section">Тип</div>
-                  <div class="ed-checkbox-row">
-                    <input type="checkbox" id="ep-bookable" checked>
-                    <label for="ep-bookable">Доступен для бронирования</label>
-                  </div>
-                  <div class="ed-checkbox-row">
-                    <input type="checkbox" id="ep-fixed">
-                    <label for="ep-fixed">Постоянно закреплён</label>
-                  </div>
-                  <div class="ed-checkbox-row">
-                    <input type="checkbox" id="ep-locked">
-                    <label for="ep-locked">Закрепить объект (без перемещения и удаления)</label>
-                  </div>
-                  <div class="ed-field">
-                    <label>Закреплён за (имя / логин)</label>
-                    <input type="text" id="ep-assigned" maxlength="120" placeholder="Только для fixed">
                   </div>
                   <div class="ed-field">
                     <label>Статус</label>
@@ -429,6 +489,19 @@
                       <option value="disabled">Отключён</option>
                     </select>
                   </div>
+                  <div class="ed-checkbox-row">
+                    <input type="checkbox" id="ep-bookable" checked>
+                    <label for="ep-bookable">Доступен для бронирования</label>
+                  </div>
+                  <div class="ed-checkbox-row">
+                    <input type="checkbox" id="ep-fixed">
+                    <label for="ep-fixed">Постоянно закреплён</label>
+                  </div>
+                  <div class="ed-field">
+                    <label>Закреплён за (имя / логин)</label>
+                    <input type="text" id="ep-assigned" maxlength="120" placeholder="Только для fixed">
+                  </div>
+                  <!-- Geometry -->
                   <div class="ed-prop-section">Геометрия</div>
                   <div class="ed-row2">
                     <div class="ed-field"><label>X</label><input type="number" id="ep-x" step="1"></div>
@@ -444,7 +517,21 @@
                     <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ep-rot-right" type="button">+15° ⟳</button>
                     <button class="ed-btn ed-btn-ghost ed-btn-sm" id="ep-rot-reset" type="button">0°</button>
                   </div>
-                  <button class="ed-btn ed-btn-danger" id="ep-desk-del" style="width:100%;margin-top:6px">Удалить стол</button>
+                  <!-- Extra -->
+                  <div class="ed-prop-section">Дополнительно</div>
+                  <div class="ed-field">
+                    <label>Имя / описание</label>
+                    <input type="text" id="ep-name" maxlength="120" placeholder="Необязательно">
+                  </div>
+                  <div class="ed-row2">
+                    <div class="ed-field"><label>Команда</label><input type="text" id="ep-team" maxlength="120"></div>
+                    <div class="ed-field"><label>Отдел</label><input type="text" id="ep-dept" maxlength="120"></div>
+                  </div>
+                  <div class="ed-checkbox-row" style="margin-top:6px">
+                    <input type="checkbox" id="ep-locked">
+                    <label for="ep-locked">Закрепить объект (без перемещения и удаления)</label>
+                  </div>
+                  <button class="ed-btn ed-btn-danger" id="ep-desk-del" style="width:100%;margin-top:10px">Удалить стол</button>
                 </div>
 
                 <div id="ep-multi-desk-panel" class="ed-hidden">
@@ -493,32 +580,78 @@
                     <div class="ed-field"><label>°</label><input type="number" id="ep-batch-r" step="5" min="-180" max="180" placeholder="не менять"></div>
                   </div>
                   <button class="ed-btn ed-btn-primary" id="ep-batch-apply" type="button" style="width:100%">Применить к выбранным местам</button>
+
+                  <!-- Align & Distribute -->
+                  <div class="ed-multi-ops-label">Выровнять</div>
+                  <div class="ed-align-row">
+                    <button class="ed-align-btn" data-align="left"   title="По левому краю"><svg viewBox="0 0 16 16" width="14" height="14"><rect x="1" y="3" width="1.5" height="10" rx=".5" fill="currentColor"/><rect x="3" y="5" width="9" height="3" rx="1" fill="currentColor"/><rect x="3" y="9" width="6" height="3" rx="1" fill="currentColor"/></svg></button>
+                    <button class="ed-align-btn" data-align="center" title="По центру горизонтально"><svg viewBox="0 0 16 16" width="14" height="14"><rect x="7.25" y="1" width="1.5" height="14" rx=".5" fill="currentColor"/><rect x="3" y="4" width="10" height="3" rx="1" fill="currentColor"/><rect x="4.5" y="9" width="7" height="3" rx="1" fill="currentColor"/></svg></button>
+                    <button class="ed-align-btn" data-align="right"  title="По правому краю"><svg viewBox="0 0 16 16" width="14" height="14"><rect x="13.5" y="3" width="1.5" height="10" rx=".5" fill="currentColor"/><rect x="4" y="5" width="9" height="3" rx="1" fill="currentColor"/><rect x="7" y="9" width="6" height="3" rx="1" fill="currentColor"/></svg></button>
+                    <button class="ed-align-btn" data-align="top"    title="По верхнему краю"><svg viewBox="0 0 16 16" width="14" height="14"><rect x="3" y="1" width="10" height="1.5" rx=".5" fill="currentColor"/><rect x="4" y="3" width="4" height="9" rx="1" fill="currentColor"/><rect x="9" y="3" width="4" height="6" rx="1" fill="currentColor"/></svg></button>
+                    <button class="ed-align-btn" data-align="middle" title="По центру вертикально"><svg viewBox="0 0 16 16" width="14" height="14"><rect x="1" y="7.25" width="14" height="1.5" rx=".5" fill="currentColor"/><rect x="3" y="3" width="4" height="10" rx="1" fill="currentColor"/><rect x="9" y="4.5" width="4" height="7" rx="1" fill="currentColor"/></svg></button>
+                    <button class="ed-align-btn" data-align="bottom" title="По нижнему краю"><svg viewBox="0 0 16 16" width="14" height="14"><rect x="3" y="13.5" width="10" height="1.5" rx=".5" fill="currentColor"/><rect x="4" y="4" width="4" height="9" rx="1" fill="currentColor"/><rect x="9" y="7" width="4" height="6" rx="1" fill="currentColor"/></svg></button>
+                  </div>
+
+                  <div class="ed-multi-ops-label">Распределить</div>
+                  <div class="ed-align-row">
+                    <button class="ed-align-btn ed-align-btn-wide" data-distribute="h" title="Равномерно по горизонтали"><svg viewBox="0 0 16 16" width="14" height="14" style="margin-right:4px"><rect x="1" y="4" width="2" height="8" rx="1" fill="currentColor"/><rect x="13" y="4" width="2" height="8" rx="1" fill="currentColor"/><rect x="6.5" y="4" width="3" height="8" rx="1" fill="currentColor"/><path d="M3.5 8h2.5M10 8h2.5" stroke="currentColor" stroke-width="1"/></svg>По горизонтали</button>
+                    <button class="ed-align-btn ed-align-btn-wide" data-distribute="v" title="Равномерно по вертикали"><svg viewBox="0 0 16 16" width="14" height="14" style="margin-right:4px"><rect x="4" y="1" width="8" height="2" rx="1" fill="currentColor"/><rect x="4" y="13" width="8" height="2" rx="1" fill="currentColor"/><rect x="4" y="6.5" width="8" height="3" rx="1" fill="currentColor"/><path d="M8 3.5v2.5M8 10v2.5" stroke="currentColor" stroke-width="1"/></svg>По вертикали</button>
+                  </div>
+
+                  <div class="ed-multi-ops-label">Группировка и копирование</div>
+                  <div class="ed-align-row">
+                    <button class="ed-align-btn ed-align-btn-wide" id="ep-group-btn"    title="Ctrl+G">⊞ Группировать</button>
+                    <button class="ed-align-btn ed-align-btn-wide" id="ep-ungroup-btn"  title="Ctrl+⇧+G">⊟ Разгруп.</button>
+                    <button class="ed-align-btn ed-align-btn-wide" id="ep-duplicate-btn" title="Ctrl+D">⧉ Дублировать</button>
+                  </div>
+                  <div class="ed-multi-ops-label">Перенумерация</div>
+                  <div class="ed-align-row">
+                    <button class="ed-align-btn ed-align-btn-wide" id="ep-renumber-btn" title="Перенумеровать выбранные места по схеме из панели инструментов">⊞ Перенумеровать</button>
+                  </div>
+                  <p class="ed-multi-note">Порядок: слева-направо, сверху-вниз. Схема и старт — из панели инструментов.</p>
                 </div>
               </div>
 
               <!-- Structure (wall/boundary/partition) props -->
               <div id="ed-props-struct" class="ed-hidden">
-                <div class="ed-field">
-                  <label>Тип</label>
-                  <select id="ep-struct-type">
-                    <option value="wall">Стена</option>
-                    <option value="boundary">Граница</option>
-                    <option value="partition">Перегородка</option>
-                    <option value="door">Дверь</option>
-                  </select>
-                </div>
-                <div class="ed-field">
-                  <label>Толщина</label>
-                  <input type="number" id="ep-struct-thick" step="0.5" min="0.5" max="40">
-                </div>
-                <div id="ep-zone-fields" class="ed-zone-only">
+                <!-- Zone (boundary) fields -->
+                <div id="ep-zone-fields" class="ed-zone-only ed-hidden">
                   <div class="ed-field">
                     <label>Название зоны</label>
                     <input type="text" id="ep-struct-label" maxlength="120" placeholder="Например: Open Space A">
                   </div>
+                  <div class="ed-field">
+                    <label>Тип зоны</label>
+                    <select id="ep-zone-type">
+                      <option value="open_space">Open Space</option>
+                      <option value="meeting_room">Переговорная</option>
+                      <option value="kitchen">Кухня</option>
+                      <option value="reception">Ресепшн</option>
+                      <option value="corridor">Коридор</option>
+                      <option value="custom">Произвольная</option>
+                    </select>
+                  </div>
+                  <div class="ed-field">
+                    <label>Цвет зоны</label>
+                    <input type="color" id="ep-struct-color" value="#1d4ed8">
+                  </div>
+                  <div class="ed-field">
+                    <label>Прозрачность заливки: <span id="ep-zone-opacity-pct">15%</span></label>
+                    <input type="range" id="ep-zone-opacity" min="0.05" max="1" step="0.05" value="0.15">
+                  </div>
+                  <div class="ed-prop-section">Геометрия</div>
+                  <div class="ed-row2">
+                    <div class="ed-field"><label>X</label><span class="ed-info-val" id="ep-zone-x">—</span></div>
+                    <div class="ed-field"><label>Y</label><span class="ed-info-val" id="ep-zone-y">—</span></div>
+                  </div>
+                  <div class="ed-row2">
+                    <div class="ed-field"><label>Ш</label><span class="ed-info-val" id="ep-zone-w">—</span></div>
+                    <div class="ed-field"><label>В</label><span class="ed-info-val" id="ep-zone-h">—</span></div>
+                  </div>
+                  <div class="ed-prop-section">Надпись</div>
                   <div class="ed-row2">
                     <div class="ed-field">
-                      <label>Позиция текста</label>
+                      <label>Позиция</label>
                       <select id="ep-struct-label-pos">
                         <option value="center">По центру</option>
                         <option value="top">Сверху</option>
@@ -541,26 +674,77 @@
                     <input type="number" id="ep-struct-label-angle" min="-180" max="180" step="1" value="0">
                   </div>
                   <div class="ed-field">
-                    <label>Размер шрифта зоны</label>
+                    <label>Размер шрифта</label>
                     <input type="number" id="ep-struct-label-size" min="8" max="120" step="1" placeholder="18">
                   </div>
+                </div>
+                <!-- Wall/Partition fields -->
+                <div id="ep-wall-fields">
+                  <div class="ed-row2">
+                    <div class="ed-field">
+                      <label>Толщина</label>
+                      <input type="number" id="ep-struct-thick" step="0.5" min="0.5" max="40">
+                    </div>
+                    <div class="ed-field">
+                      <label>Длина</label>
+                      <input type="number" id="ep-struct-length" step="1" min="1">
+                    </div>
+                  </div>
+                  <div class="ed-row2">
+                    <div class="ed-field">
+                      <label>Угол (°)</label>
+                      <input type="number" id="ep-struct-angle" step="1" min="-180" max="180">
+                    </div>
+                  </div>
+                  <div class="ed-checkbox-row">
+                    <input type="checkbox" id="ep-struct-closed">
+                    <label for="ep-struct-closed">Замкнутый контур</label>
+                  </div>
+                  <div style="display:none"><span id="ep-struct-pt-count">0</span></div>
+                </div>
+                <!-- Common -->
+                <div class="ed-checkbox-row" style="margin-top:4px">
+                  <input type="checkbox" id="ep-struct-locked">
+                  <label for="ep-struct-locked">Закрепить объект</label>
+                </div>
+                <details class="ed-details-advanced">
+                  <summary>Сменить тип</summary>
+                  <div class="ed-field" style="margin-top:6px">
+                    <select id="ep-struct-type">
+                      <option value="wall">Стена</option>
+                      <option value="boundary">Граница (зона)</option>
+                      <option value="partition">Перегородка</option>
+                    </select>
+                  </div>
+                </details>
+                <button class="ed-btn ed-btn-danger" id="ep-struct-del" style="width:100%;margin-top:10px">Удалить элемент</button>
+              </div>
+
+              <!-- Door object properties -->
+              <div id="ed-props-door" class="ed-hidden">
+                <div class="ed-row2">
                   <div class="ed-field">
-                    <label>Цвет зоны</label>
-                    <input type="color" id="ep-struct-color" value="#1d4ed8">
+                    <label>Ширина проёма</label>
+                    <input type="number" id="ep-door-width" min="10" max="200" step="5">
+                  </div>
+                  <div class="ed-field">
+                    <label>Угол (°)</label>
+                    <input type="number" id="ep-door-angle" min="-180" max="180" step="1">
                   </div>
                 </div>
                 <div class="ed-checkbox-row">
-                  <input type="checkbox" id="ep-struct-closed">
-                  <label for="ep-struct-closed">Замкнутый контур</label>
+                  <input type="checkbox" id="ep-door-flip">
+                  <label for="ep-door-flip">Сторона открытия (R — переключить)</label>
                 </div>
-                <div class="ed-checkbox-row">
-                  <input type="checkbox" id="ep-struct-locked">
-                  <label for="ep-struct-locked">Закрепить объект (без перемещения и удаления)</label>
+                <div class="ed-field" style="margin-top:6px">
+                  <label style="color:var(--text-muted)">Привязка к стене</label>
+                  <span id="ep-door-wall-info" style="font-size:12px;color:var(--text-muted)">—</span>
                 </div>
-                <div class="ed-field">
-                  <label>Точки (<span id="ep-struct-pt-count">0</span>)</label>
+                <div class="ed-checkbox-row" style="margin-top:4px">
+                  <input type="checkbox" id="ep-door-locked">
+                  <label for="ep-door-locked">Закрепить объект</label>
                 </div>
-                <button class="ed-btn ed-btn-danger" id="ep-struct-del" style="width:100%;margin-top:6px">Удалить элемент</button>
+                <button class="ed-btn ed-btn-danger" id="ep-door-del" style="width:100%;margin-top:10px">Удалить дверь</button>
               </div>
             </div>
           </div>
@@ -656,13 +840,38 @@
           </div>
         </div>
 
+        <!-- Validation overlay -->
+        <div id="ed-val-overlay" class="ed-hidden">
+          <div id="ed-val-modal">
+            <div id="ed-val-header">
+              <div>
+                <h3 id="ed-val-title">Проверка плана</h3>
+                <p id="ed-val-subtitle" style="font-size:12px;color:var(--ed-text-muted);margin-top:2px"></p>
+              </div>
+              <button class="ed-btn ed-btn-ghost ed-btn-icon" id="ed-val-close">✕</button>
+            </div>
+            <div id="ed-val-body">
+              <div id="ed-val-list"></div>
+            </div>
+            <div id="ed-val-footer">
+              <button class="ed-btn ed-btn-ghost" id="ed-val-cancel">Закрыть</button>
+              <button class="ed-btn ed-btn-primary ed-hidden" id="ed-val-publish-anyway">Опубликовать всё равно</button>
+            </div>
+          </div>
+        </div>
+
       </div><!-- /tab-editor -->
 
       <!-- Policies tab -->
       <div id="tab-policies" class="tab-content hidden">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
           <h2 style="font-size:20px;font-weight:700">Политики бронирования</h2>
-          <button id="refresh-policies" class="btn btn-secondary btn-sm">Обновить</button>
+          <div style="display:flex;gap:8px">
+            <button id="refresh-policies" class="btn btn-ghost btn-sm adm-refresh-btn" title="Обновить"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i></button>
+            <button id="open-policy-modal" class="btn btn-primary btn-sm">
+              <i data-lucide="plus" style="width:14px;height:14px"></i> Добавить
+            </button>
+          </div>
         </div>
         <div class="card" style="overflow:hidden;margin-bottom:16px">
           <div class="table-wrapper">
@@ -684,53 +893,13 @@
           </div>
           <div id="policies-pagination" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border);font-size:13px"></div>
         </div>
-        <div class="form-panel">
-          <h3>Добавить политику</h3>
-          <div class="grid-4" style="gap:12px">
-            <div class="field">
-              <label for="policy-office-select">Офис</label>
-              <select id="policy-office-select"><option value="">Выберите офис</option></select>
-            </div>
-            <div class="field">
-              <label for="policy-name">Название</label>
-              <input id="policy-name" type="text" placeholder="Стандартная">
-            </div>
-            <div class="field">
-              <label for="policy-min-days">Мин. дней вперёд</label>
-              <input id="policy-min-days" type="number" value="0" min="0">
-            </div>
-            <div class="field">
-              <label for="policy-max-days">Макс. дней вперёд</label>
-              <input id="policy-max-days" type="number" value="30" min="0">
-            </div>
-          </div>
-          <div class="grid-4" style="gap:12px;margin-top:12px">
-            <div class="field">
-              <label for="policy-min-dur">Мин. длит. (мин)</label>
-              <input id="policy-min-dur" type="number" value="30" min="0">
-            </div>
-            <div class="field">
-              <label for="policy-max-dur">Макс. длит. (мин)</label>
-              <input id="policy-max-dur" type="number" value="480" min="0">
-            </div>
-            <div class="field">
-              <label for="policy-noshow">No-show таймаут (мин)</label>
-              <input id="policy-noshow" type="number" value="15" min="0">
-            </div>
-            <div class="field">
-              <label for="policy-max-per-day">Макс. броней в день</label>
-              <input id="policy-max-per-day" type="number" value="1" min="1" max="10">
-            </div>
-          </div>
-          <button id="create-policy-btn" class="btn btn-primary" style="margin-top:16px">Добавить политику</button>
-        </div>
       </div>
 
       <!-- Reservations tab -->
       <div id="tab-reservations" class="tab-content hidden">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
           <h2 style="font-size:20px;font-weight:700">Бронирования</h2>
-          <button id="refresh-reservations" class="btn btn-secondary btn-sm">Обновить</button>
+          <button id="refresh-reservations" class="btn btn-ghost btn-sm adm-refresh-btn" title="Обновить"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i></button>
         </div>
         <div class="form-panel" style="margin-bottom:16px">
           <div class="grid-4" style="gap:12px">
@@ -779,7 +948,16 @@
       <div id="tab-departments" class="tab-content hidden">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
           <h2 style="font-size:20px;font-weight:700">Отделы</h2>
-          <button id="refresh-departments" class="btn btn-secondary btn-sm">Обновить</button>
+          <div style="display:flex;gap:8px;align-items:center">
+            <div class="adm-search-wrap">
+              <i data-lucide="search" style="width:13px;height:13px"></i>
+              <input id="departments-search" type="text" placeholder="Поиск..." autocomplete="off">
+            </div>
+            <button id="refresh-departments" class="btn btn-ghost btn-sm adm-refresh-btn" title="Обновить"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i></button>
+            <button id="open-dept-modal" class="btn btn-primary btn-sm">
+              <i data-lucide="plus" style="width:14px;height:14px"></i> Добавить
+            </button>
+          </div>
         </div>
         <div class="card" style="overflow:hidden;margin-bottom:16px">
           <div class="table-wrapper">
@@ -790,17 +968,6 @@
           </div>
           <div id="departments-pagination" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border);font-size:13px"></div>
         </div>
-        <div class="form-panel">
-          <h3>Добавить отдел</h3>
-          <div style="display:flex;gap:12px;align-items:flex-end">
-            <div class="field" style="flex:1;margin:0">
-              <label for="dept-name">Название отдела</label>
-              <input type="text" id="dept-name" placeholder="Разработка">
-            </div>
-            <button id="add-dept-btn" class="btn btn-primary">Добавить</button>
-          </div>
-          <div id="dept-msg" style="margin-top:10px"></div>
-        </div>
       </div>
 
       <!-- Users tab -->
@@ -809,7 +976,7 @@
           <h2 style="font-size:20px;font-weight:700">Пользователи</h2>
           <div style="display:flex;gap:8px;align-items:center">
             <input id="users-search" type="text" placeholder="Поиск по логину / email..." style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-2);color:var(--text-1);font-size:13px;width:240px">
-            <button id="refresh-users" class="btn btn-secondary btn-sm">Обновить</button>
+            <button id="refresh-users" class="btn btn-ghost btn-sm adm-refresh-btn" title="Обновить"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i></button>
           </div>
         </div>
         <div class="card" style="overflow:hidden">
@@ -824,7 +991,6 @@
                   <th>Отдел</th>
                   <th>Роль</th>
                   <th>Статус</th>
-                  <th>Активен</th>
                   <th>Действия</th>
                 </tr>
               </thead>
@@ -837,29 +1003,46 @@
 
       <!-- Analytics tab -->
       <div id="tab-analytics" class="tab-content hidden">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
-          <h2 style="font-size:20px;font-weight:700">Аналитика</h2>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button id="refresh-analytics" class="btn btn-secondary btn-sm">Обновить</button>
-            <button id="export-reservations-csv" class="btn btn-secondary btn-sm">&#11015; Экспорт броней CSV</button>
+        <div class="anl-header">
+          <h2 class="anl-title">Аналитика</h2>
+          <div class="anl-controls">
+            <div class="anl-period-group" id="anl-period-group">
+              <button class="anl-period-btn active" data-period="day">День</button>
+              <button class="anl-period-btn" data-period="week">Неделя</button>
+              <button class="anl-period-btn" data-period="month">Месяц</button>
+            </div>
+            <button id="refresh-analytics" class="btn btn-ghost btn-sm adm-refresh-btn" title="Обновить"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i></button>
+            <button id="export-reservations-csv" class="btn btn-secondary btn-sm">&#11015; CSV</button>
           </div>
         </div>
         <div class="grid-4" style="margin-bottom:24px">
-          <div class="card" style="padding:20px">
-            <p style="font-size:13px;color:var(--text-2);margin-bottom:6px">Бронирований сегодня</p>
-            <p id="kpi-today" style="font-size:32px;font-weight:700;color:var(--accent)">—</p>
+          <div class="card anl-kpi-card">
+            <p class="anl-kpi-label" id="kpi-today-label">Бронирований сегодня</p>
+            <div class="anl-kpi-row">
+              <p id="kpi-today" class="anl-kpi-value anl-accent">—</p>
+              <span id="trend-today" class="anl-trend"></span>
+            </div>
           </div>
-          <div class="card" style="padding:20px">
-            <p style="font-size:13px;color:var(--text-2);margin-bottom:6px">Активных броней</p>
-            <p id="kpi-active" style="font-size:32px;font-weight:700;color:#16a34a">—</p>
+          <div class="card anl-kpi-card">
+            <p class="anl-kpi-label">Активных броней</p>
+            <div class="anl-kpi-row">
+              <p id="kpi-active" class="anl-kpi-value anl-green">—</p>
+              <span id="trend-active" class="anl-trend"></span>
+            </div>
           </div>
-          <div class="card" style="padding:20px">
-            <p style="font-size:13px;color:var(--text-2);margin-bottom:6px">Отменено всего</p>
-            <p id="kpi-cancelled" style="font-size:32px;font-weight:700;color:#dc2626">—</p>
+          <div class="card anl-kpi-card">
+            <p class="anl-kpi-label">Отменено</p>
+            <div class="anl-kpi-row">
+              <p id="kpi-cancelled" class="anl-kpi-value anl-red">—</p>
+              <span id="trend-cancelled" class="anl-trend"></span>
+            </div>
           </div>
-          <div class="card" style="padding:20px">
-            <p style="font-size:13px;color:var(--text-2);margin-bottom:6px">No-show rate</p>
-            <p id="kpi-noshow" style="font-size:32px;font-weight:700;color:#d97706">—</p>
+          <div class="card anl-kpi-card">
+            <p class="anl-kpi-label">No-show rate</p>
+            <div class="anl-kpi-row">
+              <p id="kpi-noshow" class="anl-kpi-value anl-amber">—</p>
+              <span id="trend-noshow" class="anl-trend"></span>
+            </div>
           </div>
         </div>
         <div class="card" style="margin-bottom:20px">
@@ -897,6 +1080,287 @@
 
   <!-- Fixed toast container -->
   <div id="admin-toast" class="admin-toast-container"></div>
+
+  <!-- ── Modals ──────────────────────────────────────────────────────────── -->
+
+  <!-- Office modal -->
+  <div id="modal-office" class="adm-modal-overlay" aria-hidden="true">
+    <div class="adm-modal" role="dialog" aria-labelledby="modal-office-title">
+      <div class="adm-modal-header">
+        <h2 id="modal-office-title" class="adm-modal-title">
+          <i data-lucide="building-2" style="width:18px;height:18px"></i> Создать офис
+        </h2>
+        <button class="adm-modal-close" data-close="modal-office" aria-label="Закрыть">
+          <i data-lucide="x" style="width:16px;height:16px"></i>
+        </button>
+      </div>
+      <div class="adm-modal-body">
+        <div class="adm-modal-grid">
+          <div class="field">
+            <label for="office-name">Название <span class="adm-required">*</span></label>
+            <input id="office-name" type="text" placeholder="Главный офис" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="office-address">Адрес</label>
+            <input id="office-address" type="text" placeholder="ул. Ленина, 1" autocomplete="off">
+          </div>
+        </div>
+        <div id="office-modal-msg" class="adm-modal-msg"></div>
+      </div>
+      <div class="adm-modal-footer">
+        <button class="btn btn-secondary" data-close="modal-office">Отмена</button>
+        <button id="create-office-btn" class="btn btn-primary">Создать офис</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Floor modal -->
+  <div id="modal-floor" class="adm-modal-overlay" aria-hidden="true">
+    <div class="adm-modal" role="dialog" aria-labelledby="modal-floor-title">
+      <div class="adm-modal-header">
+        <h2 id="modal-floor-title" class="adm-modal-title">
+          <i data-lucide="layers" style="width:18px;height:18px"></i> Создать этаж
+        </h2>
+        <button class="adm-modal-close" data-close="modal-floor" aria-label="Закрыть">
+          <i data-lucide="x" style="width:16px;height:16px"></i>
+        </button>
+      </div>
+      <div class="adm-modal-body">
+        <div class="adm-modal-grid">
+          <div class="field">
+            <label for="floor-office-select">Офис <span class="adm-required">*</span></label>
+            <select id="floor-office-select"><option value="">Выберите офис</option></select>
+          </div>
+          <div class="field">
+            <label for="floor-name">Название <span class="adm-required">*</span></label>
+            <input id="floor-name" type="text" placeholder="Этаж 1" autocomplete="off">
+          </div>
+        </div>
+        <div id="floor-modal-msg" class="adm-modal-msg"></div>
+      </div>
+      <div class="adm-modal-footer">
+        <button class="btn btn-secondary" data-close="modal-floor">Отмена</button>
+        <button id="create-floor-btn" class="btn btn-primary">Создать этаж</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload floor plan modal -->
+  <div id="modal-upload-plan" class="adm-modal-overlay" aria-hidden="true">
+    <div class="adm-modal" role="dialog" aria-labelledby="modal-plan-title">
+      <div class="adm-modal-header">
+        <h2 id="modal-plan-title" class="adm-modal-title">
+          <i data-lucide="image" style="width:18px;height:18px"></i> Загрузить план этажа
+        </h2>
+        <button class="adm-modal-close" data-close="modal-upload-plan" aria-label="Закрыть">
+          <i data-lucide="x" style="width:16px;height:16px"></i>
+        </button>
+      </div>
+      <div class="adm-modal-body">
+        <div class="adm-modal-grid">
+          <div class="field">
+            <label for="plan-floor-select">Этаж <span class="adm-required">*</span></label>
+            <select id="plan-floor-select"><option value="">Выберите этаж</option></select>
+          </div>
+          <div class="field">
+            <label for="plan-file">Файл (PNG / SVG / JPEG) <span class="adm-required">*</span></label>
+            <input id="plan-file" type="file" accept="image/png,image/svg+xml,image/jpeg">
+          </div>
+        </div>
+        <div id="plan-modal-msg" class="adm-modal-msg"></div>
+      </div>
+      <div class="adm-modal-footer">
+        <button class="btn btn-secondary" data-close="modal-upload-plan">Отмена</button>
+        <button id="upload-plan-btn" class="btn btn-primary">Загрузить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Policy modal -->
+  <div id="modal-policy" class="adm-modal-overlay" aria-hidden="true">
+    <div class="adm-modal adm-modal-wide" role="dialog" aria-labelledby="modal-policy-title">
+      <div class="adm-modal-header">
+        <h2 id="modal-policy-title" class="adm-modal-title">
+          <i data-lucide="shield-check" style="width:18px;height:18px"></i> Создать политику
+        </h2>
+        <button class="adm-modal-close" data-close="modal-policy" aria-label="Закрыть">
+          <i data-lucide="x" style="width:16px;height:16px"></i>
+        </button>
+      </div>
+      <div class="adm-modal-body">
+        <!-- Основные поля -->
+        <div class="adm-modal-grid">
+          <div class="field">
+            <label for="policy-office-select">Офис <span class="adm-required">*</span></label>
+            <select id="policy-office-select"><option value="">Выберите офис</option></select>
+          </div>
+          <div class="field">
+            <label for="policy-name">Название <span class="adm-required">*</span></label>
+            <input id="policy-name" type="text" placeholder="Стандартная" autocomplete="off">
+          </div>
+        </div>
+        <div class="adm-modal-section-label" style="margin-top:14px">Дни бронирования вперёд</div>
+        <div class="adm-modal-grid">
+          <div class="field">
+            <label for="policy-min-days">Минимум (дней)</label>
+            <input id="policy-min-days" type="number" value="0" min="0">
+          </div>
+          <div class="field">
+            <label for="policy-max-days">Максимум (дней)</label>
+            <input id="policy-max-days" type="number" value="30" min="0">
+          </div>
+        </div>
+
+        <!-- Дополнительные поля (accordion) -->
+        <details class="adm-policy-advanced" id="policy-advanced-details">
+          <summary class="adm-policy-advanced-summary">
+            <i data-lucide="settings-2" style="width:13px;height:13px"></i>
+            Дополнительно
+            <span class="adm-policy-advanced-hint">длительность, no-show, лимиты</span>
+            <i data-lucide="chevron-down" class="adm-policy-chevron" style="width:14px;height:14px"></i>
+          </summary>
+          <div class="adm-policy-advanced-body">
+            <div class="adm-modal-section-label">Длительность бронирования</div>
+            <div class="adm-modal-grid">
+              <div class="field">
+                <label for="policy-min-dur">Минимум (мин)</label>
+                <input id="policy-min-dur" type="number" value="30" min="0">
+              </div>
+              <div class="field">
+                <label for="policy-max-dur">Максимум (мин)</label>
+                <input id="policy-max-dur" type="number" value="480" min="0">
+              </div>
+            </div>
+            <div class="adm-modal-section-label" style="margin-top:12px">Ограничения</div>
+            <div class="adm-modal-grid">
+              <div class="field">
+                <label for="policy-noshow">No-show таймаут (мин)
+                  <span class="adm-field-hint">Авто-отмена если не отметился</span>
+                </label>
+                <input id="policy-noshow" type="number" value="15" min="0">
+              </div>
+              <div class="field">
+                <label for="policy-max-per-day">Макс. броней в день
+                  <span class="adm-field-hint">На одного пользователя</span>
+                </label>
+                <input id="policy-max-per-day" type="number" value="1" min="1" max="10">
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <div id="policy-modal-msg" class="adm-modal-msg"></div>
+      </div>
+      <div class="adm-modal-footer">
+        <button class="btn btn-secondary" data-close="modal-policy">Отмена</button>
+        <button id="create-policy-btn" class="btn btn-primary">Создать политику</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm delete modal -->
+  <div id="modal-confirm" class="adm-modal-overlay" aria-hidden="true">
+    <div class="adm-modal adm-modal-sm" role="alertdialog" aria-labelledby="confirm-modal-title">
+      <div class="adm-modal-header">
+        <h2 class="adm-modal-title" style="color:#dc2626">
+          <i data-lucide="alert-triangle" style="width:18px;height:18px"></i>
+          <span id="confirm-modal-title">Удалить?</span>
+        </h2>
+        <button class="adm-modal-close" data-close="modal-confirm" aria-label="Закрыть">
+          <i data-lucide="x" style="width:16px;height:16px"></i>
+        </button>
+      </div>
+      <div class="adm-modal-body">
+        <p id="confirm-modal-message" style="color:#374151;font-size:14px;line-height:1.6;margin:0"></p>
+      </div>
+      <div class="adm-modal-footer">
+        <button class="btn btn-secondary" data-close="modal-confirm">Отмена</button>
+        <button id="confirm-modal-ok" class="btn btn-danger">Удалить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Department modal -->
+  <div id="modal-dept" class="adm-modal-overlay" aria-hidden="true">
+    <div class="adm-modal" role="dialog" aria-labelledby="modal-dept-title">
+      <div class="adm-modal-header">
+        <h2 id="modal-dept-title" class="adm-modal-title">
+          <i data-lucide="users" style="width:18px;height:18px"></i> Создать отдел
+        </h2>
+        <button class="adm-modal-close" data-close="modal-dept" aria-label="Закрыть">
+          <i data-lucide="x" style="width:16px;height:16px"></i>
+        </button>
+      </div>
+      <div class="adm-modal-body">
+        <div class="field">
+          <label for="dept-name">Название отдела <span class="adm-required">*</span></label>
+          <input type="text" id="dept-name" placeholder="Разработка" autocomplete="off">
+        </div>
+        <div id="dept-msg" class="adm-modal-msg" style="margin-top:10px"></div>
+      </div>
+      <div class="adm-modal-footer">
+        <button class="btn btn-secondary" data-close="modal-dept">Отмена</button>
+        <button id="add-dept-btn" class="btn btn-primary">Создать отдел</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating tooltip -->
+  <div id="ed-tip" role="tooltip" aria-hidden="true">
+    <strong id="ed-tip-title"></strong>
+    <span id="ed-tip-desc"></span>
+  </div>
+
+  <!-- Onboarding modal -->
+  <div id="ed-onboarding-overlay" class="ed-hidden" role="dialog" aria-modal="true" aria-label="Обучение редактору">
+    <div id="ed-onboarding">
+      <div class="ed-ob-progress">
+        <div class="ed-ob-dot active" data-step="0"></div>
+        <div class="ed-ob-dot" data-step="1"></div>
+        <div class="ed-ob-dot" data-step="2"></div>
+      </div>
+      <div class="ed-ob-slides">
+
+        <div class="ed-ob-slide active" data-step="0">
+          <div class="ed-ob-slide-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+          </div>
+          <h3>Шаг 1 — Загрузите план</h3>
+          <p>Выберите этаж из выпадающего списка, затем нажмите <strong>«Загрузить план»</strong> и загрузите PNG или SVG с планировкой офиса. Он станет фоном для расстановки мест.</p>
+        </div>
+
+        <div class="ed-ob-slide" data-step="1">
+          <div class="ed-ob-slide-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
+            </svg>
+          </div>
+          <h3>Шаг 2 — Расставьте рабочие места</h3>
+          <p>Выберите инструмент <strong>«Место»</strong> (клавиша <kbd>D</kbd>) и кликайте по плану, чтобы разместить рабочие места. Используйте <strong>«Зона»</strong> (<kbd>B</kbd>) для обозначения помещений.</p>
+        </div>
+
+        <div class="ed-ob-slide" data-step="2">
+          <div class="ed-ob-slide-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+            </svg>
+          </div>
+          <h3>Шаг 3 — Сохраните и опубликуйте</h3>
+          <p>Нажмите <strong>«Сохранить»</strong> чтобы создать черновик. Когда план готов — <strong>«Опубликовать»</strong>, чтобы сотрудники увидели его в приложении бронирования.</p>
+        </div>
+
+      </div>
+      <div class="ed-ob-footer">
+        <button class="ed-btn ed-btn-ghost ed-ob-skip" id="ed-ob-skip">Пропустить</button>
+        <div class="ed-ob-nav">
+          <button class="ed-btn ed-btn-ghost" id="ed-ob-prev" disabled>← Назад</button>
+          <button class="ed-btn ed-btn-primary" id="ed-ob-next">Далее →</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script src="./editor.js"></script>
   <script src="./admin.js"></script>

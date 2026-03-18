@@ -51,6 +51,7 @@ async def lifespan(app: FastAPI):
         # User active/inactive flag
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;",
         "ALTER TABLE IF EXISTS policies ADD COLUMN IF NOT EXISTS max_bookings_per_day INTEGER NOT NULL DEFAULT 1;",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500);",
     ]
     try:
         with engine.connect() as conn:
@@ -185,6 +186,8 @@ def _rate_limit(request: Request, max_req: int = 10, window: int = 60) -> None:
     key = f"{ip}:{request.url.path}"
     now = _time.monotonic()
     hits = [t for t in _rl_store[key] if now - t < window]
+    if not hits and key in _rl_store:
+        del _rl_store[key]
     hits.append(now)
     _rl_store[key] = hits
     if len(hits) > max_req:
@@ -324,11 +327,11 @@ async def admin_delete_user(
 # Team  (registered BEFORE /users/{username} to avoid route capture)
 # ---------------------------------------------------------------------------
 
-@app.get("/users/team", response_model=list[schemas.UserPublic], tags=["users"])
+@app.get("/users/team", response_model=list[schemas.UserWithLocation], tags=["users"])
 async def get_team(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> list[models.User]:
+) -> list[dict]:
     return crud.get_team(db, current_user.username)
 
 
@@ -408,6 +411,46 @@ async def update_user_profile(
         raise HTTPException(status_code=404, detail="User not found")
 
 
+@app.post("/users/me/avatar", tags=["users"])
+async def upload_avatar(
+    file: UploadFile = File(...),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Upload / replace the current user's avatar. Accepts JPEG/PNG/WebP, max 5 MB."""
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are allowed")
+    content = await file.read()
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 5 MB)")
+
+    avatars_dir = STATIC_DIR / "avatars"
+    avatars_dir.mkdir(exist_ok=True)
+
+    # Delete old avatar file if it's a local one
+    if current_user.avatar_url and current_user.avatar_url.startswith("/static/avatars/"):
+        old_path = STATIC_DIR / current_user.avatar_url.removeprefix("/static/")
+        old_path.unlink(missing_ok=True)
+
+    ext = Path(file.filename).suffix.lower() if file.filename else ".jpg"
+    if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
+        ext = ".jpg"
+    fname = f"{uuid.uuid4().hex}{ext}"
+    (avatars_dir / fname).write_bytes(content)
+
+    current_user.avatar_url = f"/static/avatars/{fname}"
+    db.commit()
+    return {"avatar_url": current_user.avatar_url}
+
+
+@app.get("/users/me/location", tags=["users"])
+async def get_my_location(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return crud.get_user_location(db, current_user.username)
+
+
 @app.post("/users/me/password", response_model=schemas.Message, tags=["users"])
 async def change_password(
     payload: schemas.PasswordChange,
@@ -445,6 +488,21 @@ async def create_department(
         return crud.create_department(db, payload.name)
     except ValueError:
         raise HTTPException(409, "Отдел с таким названием уже существует")
+
+
+@app.patch("/departments/{dept_id}", response_model=schemas.Department, tags=["departments"])
+async def update_department(
+    dept_id: int,
+    payload: schemas.DepartmentUpdate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != "admin":
+        raise HTTPException(403, "Только для администраторов")
+    try:
+        return crud.update_department(db, dept_id, payload.name)
+    except KeyError:
+        raise HTTPException(404, "Отдел не найден")
 
 
 @app.delete("/departments/{dept_id}", status_code=204, response_class=Response, tags=["departments"])
@@ -1195,8 +1253,11 @@ async def cancel_reservation(
 # ---------------------------------------------------------------------------
 
 @app.get("/analytics", response_model=schemas.AnalyticsResponse, dependencies=[Depends(require_admin)])
-async def get_analytics(db: Session = Depends(get_db)) -> schemas.AnalyticsResponse:
-    return crud.get_analytics(db)
+async def get_analytics(
+    period: str = Query("day", regex="^(day|week|month)$"),
+    db: Session = Depends(get_db),
+) -> schemas.AnalyticsResponse:
+    return crud.get_analytics(db, period=period)
 
 
 # ---------------------------------------------------------------------------

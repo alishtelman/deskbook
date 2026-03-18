@@ -40,7 +40,6 @@ const startInput          = document.getElementById("start-time");
 const endInput            = document.getElementById("end-time");
 const quickDateTodayBtn   = document.getElementById("quick-date-today");
 const quickDateTomorrowBtn = document.getElementById("quick-date-tomorrow");
-const quickDateCustomBtn  = document.getElementById("quick-date-custom");
 const timeWindowIndicator = document.getElementById("time-window-indicator");
 const myBookingsContainer = document.getElementById("my-bookings");
 const loggedAsEl          = document.getElementById("logged-as");
@@ -356,7 +355,6 @@ function updateTimeWindowIndicator() {
 function _applyDatePresetButtons() {
   quickDateTodayBtn?.classList.toggle("active", _datePreset === "today");
   quickDateTomorrowBtn?.classList.toggle("active", _datePreset === "tomorrow");
-  quickDateCustomBtn?.classList.toggle("active", _datePreset === "custom");
 }
 
 function setDatePreset(mode, opts = {}) {
@@ -387,6 +385,18 @@ loggedAsEl.textContent = _username;
 dateInput.value = _isoLocalDate(new Date());
 const userAvatarEl = document.getElementById("user-avatar");
 if (userAvatarEl) userAvatarEl.textContent = _username.slice(0, 2).toUpperCase();
+
+function _setHeaderAvatar(avatarUrl) {
+  if (!userAvatarEl) return;
+  if (avatarUrl) {
+    userAvatarEl.textContent = "";
+    const img = document.createElement("img");
+    img.src = avatarUrl;
+    img.alt = "";
+    img.style.cssText = "width:100%;height:100%;object-fit:cover;border-radius:50%;display:block";
+    userAvatarEl.appendChild(img);
+  }
+}
 _applyDatePresetButtons();
 updateTimeWindowIndicator();
 
@@ -451,10 +461,15 @@ function _notifRenderDrawer() {
     const n   = _notifHistory[i];
     const el  = document.createElement("div");
     el.className = `notif-item notif-item-${n.type}${n.read ? " is-read" : ""}`;
-    el.innerHTML = `
-      <span class="notif-item-dot"></span>
-      <span class="notif-item-text">${n.text}</span>
-      <span class="notif-item-time">${_relTime(n.ts)}</span>`;
+    const dot = document.createElement("span");
+    dot.className = "notif-item-dot";
+    const text = document.createElement("span");
+    text.className = "notif-item-text";
+    text.textContent = n.text;
+    const time = document.createElement("span");
+    time.className = "notif-item-time";
+    time.textContent = _relTime(n.ts);
+    el.append(dot, text, time);
     body.append(el);
   }
 }
@@ -667,7 +682,7 @@ async function refreshAvailability() {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      for (const item of (batch?.items || [])) {
+      for (const item of (batch?.results || batch?.items || [])) {
         state.availability.set(item.desk_id, {
           available: Boolean(item.available),
           reason: item.reason || null,
@@ -962,10 +977,15 @@ function initZoomPan() {
     mapZoomContent.style.cursor = _zoom > _minZoom ? "grab" : "default";
   };
 
-  // Smooth wheel scaling to avoid abrupt jumps on desktop trackpads/mice.
-  const wheelZoomFactor = (deltaY) => {
-    const f = Math.exp(-deltaY * 0.0011);
-    return Math.max(0.92, Math.min(1.08, f));
+  const wheelZoomFactor = (e) => {
+    const raw = Number.isFinite(e.deltaY) ? e.deltaY : 0;
+    if (e.ctrlKey) {
+      // Trackpad pinch (ctrlKey=true): small deltaY (~0.5–3), needs higher speed
+      return Math.exp(Math.max(-0.25, Math.min(0.25, -raw * 0.06)));
+    }
+    // Mouse wheel / trackpad scroll
+    const delta = Math.max(-120, Math.min(120, raw));
+    return Math.max(0.92, Math.min(1.08, Math.exp(-delta * 0.0011)));
   };
 
   mapZoomWrapper.addEventListener("wheel", (e) => {
@@ -975,7 +995,7 @@ function initZoomPan() {
     const rect = mapZoomWrapper.getBoundingClientRect();
     const cx = e.clientX - rect.left;
     const cy = e.clientY - rect.top;
-    zoomAround(cx, cy, _zoom * wheelZoomFactor(e.deltaY));
+    zoomAround(cx, cy, _zoom * wheelZoomFactor(e));
   }, { passive: false });
 
   mapZoomWrapper.addEventListener("mousedown", (e) => {
@@ -1092,7 +1112,10 @@ function initZoomPan() {
   let _fitRO;
   new ResizeObserver(() => {
     clearTimeout(_fitRO);
-    _fitRO = setTimeout(() => { if (floorPlanImage.naturalWidth) fitFloorPlan(); }, 80);
+    _fitRO = setTimeout(() => {
+      if (_inlineZoomController) _inlineZoomController.reset();
+      else if (floorPlanImage.naturalWidth) fitFloorPlan();
+    }, 80);
   }).observe(mapZoomWrapper);
 }
 
@@ -1109,18 +1132,13 @@ function fitFloorPlan() {
   const nH = floorPlanImage.naturalHeight;
 
   if (_fitMode === 'height') {
-    // Fill container height exactly; frame may be wider than wrapper → pan
+    // H-mode: fill container height; frame may be wider → pan left/right
     _imgH = wH;
     _imgW = Math.round(nW * wH / nH);
   } else {
-    // Contain: fit entire image, cap scale at 1.0 (no upscale = no blur)
-    if (wW / nW < wH / nH) {
-      _imgW = Math.min(nW, wW);
-      _imgH = Math.round(_imgW * nH / nW);
-    } else {
-      _imgH = Math.min(nH, wH);
-      _imgW = Math.round(_imgH * nW / nH);
-    }
+    // FIT-mode: always fill container WIDTH; portrait plans overflow height → pan up/down
+    _imgW = wW;
+    _imgH = Math.round(nH * wW / nW);
   }
 
   // Frame always at (0,0) in content space; centering done via _tx/_ty translate
@@ -1164,6 +1182,36 @@ let _currentLayout = null;
 function _clearInlineSvgWrap() {
   document.getElementById("inline-svg-wrap")?.remove();
   _inlineZoomController = null;
+  _clearMinimap();
+}
+
+// Size inline-svg-wrap to fill the container (like fitFloorPlan for PNG).
+// The wrap gets absolute pixel dimensions; SVG inside uses width/height 100% + preserveAspectRatio=none.
+function _fitInlineSvgWrap(svgWrap, svgVW, svgVH) {
+  if (!svgWrap || !svgVW || !svgVH) return;
+  const cW = mapZoomWrapper.clientWidth;
+  const cH = mapZoomWrapper.clientHeight;
+  if (!cW || !cH) return;
+
+  let wrapW, wrapH;
+  if (_fitMode === "height") {
+    wrapH = cH;
+    wrapW = Math.round(cH * svgVW / svgVH);
+  } else {
+    if (cW / svgVW < cH / svgVH) {
+      wrapW = cW;
+      wrapH = Math.round(cW * svgVH / svgVW);
+    } else {
+      wrapH = cH;
+      wrapW = Math.round(cH * svgVW / svgVH);
+    }
+  }
+
+  const left = Math.round((cW - wrapW) / 2);
+  const top  = Math.round((cH - wrapH) / 2);
+  svgWrap.style.cssText =
+    `position:absolute;left:${left}px;top:${top}px;` +
+    `width:${wrapW}px;height:${wrapH}px;overflow:hidden;`;
 }
 
 function _normDeskLabel(value) {
@@ -1441,9 +1489,9 @@ function _renderInlineLayoutFloor(layout, imageFrame) {
   if (!svgWrap) {
     svgWrap = document.createElement("div");
     svgWrap.id = "inline-svg-wrap";
-    svgWrap.style.cssText = "width:100%;height:100%;position:relative;overflow:hidden";
     mapZoomWrapper.appendChild(svgWrap);
   }
+  svgWrap.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;";
 
   const vb = Array.isArray(layout.vb) && layout.vb.length >= 4 ? layout.vb : [0, 0, 1000, 1000];
   const [vx, vy, vw, vh] = vb.map(Number);
@@ -1561,10 +1609,11 @@ function _renderInlineLayoutFloor(layout, imageFrame) {
 
   svgWrap.innerHTML = `
     <svg id="inline-floor-svg" viewBox="${vx} ${vy} ${vw} ${vh}"
+         preserveAspectRatio="xMidYMid meet"
          style="width:100%;height:100%;display:block;user-select:none"
          xmlns="http://www.w3.org/2000/svg">
       <g id="if-bg" pointer-events="none">
-        <rect x="${vx}" y="${vy}" width="${vw}" height="${vh}" fill="#e9eef4"/>
+        <rect x="${vx - vw}" y="${vy - vh}" width="${vw * 3}" height="${vh * 3}" fill="#f6f8fb"/>
         ${bgImage}
       </g>
       <g id="if-boundaries" pointer-events="none">${boundaries}</g>
@@ -1586,6 +1635,7 @@ function _renderInlineLayoutFloor(layout, imageFrame) {
     });
   });
 
+  _setupMinimap(layout, inlineSvg);
   _inlineZoomController = _initInlineSvgZoomPan(inlineSvg, vx, vy, vw, vh);
   renderLegend(state.desks || []);
   renderFilterChips(state.desks || []);
@@ -1614,9 +1664,9 @@ function _renderInlineSVGFloor(rev, imageFrame) {
   if (!svgWrap) {
     svgWrap = document.createElement("div");
     svgWrap.id = "inline-svg-wrap";
-    svgWrap.style.cssText = "width:100%;height:100%;position:relative;overflow:hidden";
     mapZoomWrapper.appendChild(svgWrap);
   }
+  svgWrap.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;";
 
   // Parse viewBox
   const vbMatch = rev.plan_svg.match(/viewBox\s*=\s*["']([^"']+)["']/);
@@ -1684,6 +1734,7 @@ function _renderInlineSVGFloor(rev, imageFrame) {
 
   svgWrap.innerHTML = `
     <svg id="inline-floor-svg" viewBox="${vx} ${vy} ${vw} ${vh}"
+         preserveAspectRatio="xMidYMid meet"
          style="width:100%;height:100%;display:block;user-select:none"
          xmlns="http://www.w3.org/2000/svg">
       <g id="if-floorplan" pointer-events="none">${innerContent}</g>
@@ -1705,6 +1756,7 @@ function _renderInlineSVGFloor(rev, imageFrame) {
   });
 
   // Basic zoom/pan on the inline SVG via viewBox manipulation
+  _clearMinimap();
   _inlineZoomController = _initInlineSvgZoomPan(inlineSvg, vx, vy, vw, vh);
   renderLegend(state.desks || []);
   renderFilterChips(state.desks || []);
@@ -1745,7 +1797,76 @@ function _safeBBox(node) {
   }
 }
 
-function _computeInlineFitView(svg, origX, origY, origW, origH) {
+function _clearMinimap() {
+  const wrap = document.getElementById("minimap-wrap");
+  if (wrap) wrap.style.display = "none";
+  const mmContent = document.getElementById("minimap-content");
+  if (mmContent) mmContent.innerHTML = "";
+}
+
+function _updateMinimapViewport(vx, vy, vw, vh) {
+  const rect = document.getElementById("minimap-viewport");
+  if (!rect) return;
+  rect.setAttribute("x", vx);
+  rect.setAttribute("y", vy);
+  rect.setAttribute("width", Math.max(1, vw));
+  rect.setAttribute("height", Math.max(1, vh));
+}
+
+function _setupMinimap(layout, mainSvg) {
+  const wrap = document.getElementById("minimap-wrap");
+  const mmSvg = document.getElementById("minimap-svg");
+  const mmContent = document.getElementById("minimap-content");
+  const mmBg = document.getElementById("minimap-bg");
+  const mmViewport = document.getElementById("minimap-viewport");
+  if (!wrap || !mmSvg || !mmContent || !mmBg || !mmViewport) return;
+
+  const vb = Array.isArray(layout?.vb) && layout.vb.length >= 4 ? layout.vb.map(Number) : [0, 0, 1000, 1000];
+  const [ox, oy, ow, oh] = vb;
+
+  mmSvg.setAttribute("viewBox", `${ox} ${oy} ${ow} ${oh}`);
+  mmBg.setAttribute("x", ox);
+  mmBg.setAttribute("y", oy);
+  mmBg.setAttribute("width", ow);
+  mmBg.setAttribute("height", oh);
+
+  const strokeW = Math.max(8, ow * 0.014);
+  mmViewport.setAttribute("stroke-width", strokeW);
+  mmViewport.setAttribute("rx", strokeW * 0.5);
+
+  let html = "";
+  const wallsG = mainSvg?.querySelector("#if-walls");
+  const boundariesG = mainSvg?.querySelector("#if-boundaries");
+  if (boundariesG) html += boundariesG.innerHTML;
+  if (wallsG) html += wallsG.innerHTML;
+
+  const desks = Array.isArray(layout?.desks) ? layout.desks : [];
+  const dotR = Math.max(4, ow * 0.006);
+  for (const d of desks) {
+    const cx = Number(d.x || 0) + Number(d.w || 0) / 2;
+    const cy = Number(d.y || 0) + Number(d.h || 0) / 2;
+    html += `<circle cx="${cx}" cy="${cy}" r="${dotR}" fill="#2563eb" opacity="0.45"/>`;
+  }
+  mmContent.innerHTML = html;
+
+  const existingListener = wrap._minimapClickHandler;
+  if (existingListener) wrap.removeEventListener("click", existingListener);
+  wrap._minimapClickHandler = (e) => {
+    if (!_inlineZoomController) return;
+    const r = mmSvg.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    const px = (e.clientX - r.left) / r.width;
+    const py = (e.clientY - r.top) / r.height;
+    const worldX = ox + px * ow;
+    const worldY = oy + py * oh;
+    _inlineZoomController.centerAt(worldX, worldY);
+  };
+  wrap.addEventListener("click", wrap._minimapClickHandler);
+
+  wrap.style.display = "";
+}
+
+function _computeInlineFitView(svg, origX, origY, origW, origH, preferMarkers = false) {
   const fallback = {
     x: Number(origX) || 0,
     y: Number(origY) || 0,
@@ -1754,17 +1875,27 @@ function _computeInlineFitView(svg, origX, origY, origW, origH) {
   };
   if (!svg) return fallback;
 
+  if (preferMarkers) {
+    // Zoom to desk markers area for initial display
+    // (walls/boundaries may span the full canvas and would make desks appear tiny)
+    const markersBox = _safeBBox(svg.querySelector("#if-markers"));
+    if (markersBox && markersBox.w > 1 && markersBox.h > 1) {
+      const pad = Math.max(8, Math.min(220, Math.max(markersBox.w, markersBox.h) * 0.08));
+      return {
+        x: markersBox.x - pad,
+        y: markersBox.y - pad,
+        w: Math.max(1, markersBox.w + pad * 2),
+        h: Math.max(1, markersBox.h + pad * 2),
+      };
+    }
+  }
+
+  // Full content BBox — used for H/FIT reset and as fallback when no markers
   const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
   const selectors = [
-    "#if-floorplan",
-    "#if-boundaries",
-    "#if-walls",
-    "#if-partitions",
-    "#if-doors",
-    "#if-zones",
-    "#if-markers",
+    "#if-floorplan", "#if-boundaries", "#if-walls", "#if-partitions",
+    "#if-doors", "#if-zones", "#if-markers",
   ];
-
   for (const selector of selectors) {
     const node = svg.querySelector(selector);
     const box = _safeBBox(node);
@@ -1774,29 +1905,16 @@ function _computeInlineFitView(svg, origX, origY, origW, origH) {
     bounds.maxX = Math.max(bounds.maxX, box.x + box.w);
     bounds.maxY = Math.max(bounds.maxY, box.y + box.h);
   }
-
   if (!Number.isFinite(bounds.minX) || !Number.isFinite(bounds.maxX)) return fallback;
   const bw = Math.max(1, bounds.maxX - bounds.minX);
   const bh = Math.max(1, bounds.maxY - bounds.minY);
-  const pad = Math.max(8, Math.min(220, Math.max(bw, bh) * 0.08));
-  const tx = bounds.minX - pad;
-  const ty = bounds.minY - pad;
-  const tw = bw + pad * 2;
-  const th = bh + pad * 2;
-
-  const ratio = fallback.w / Math.max(1, fallback.h);
-  let vw = tw;
-  let vh = th;
-  if (tw / Math.max(1, th) > ratio) vh = tw / ratio;
-  else vw = th * ratio;
-  const cx = tx + tw / 2;
-  const cy = ty + th / 2;
-  return { x: cx - vw / 2, y: cy - vh / 2, w: Math.max(1, vw), h: Math.max(1, vh) };
+  const pad = Math.max(8, Math.min(220, Math.max(bw, bh) * 0.04));
+  return { x: bounds.minX - pad, y: bounds.minY - pad, w: Math.max(1, bw + pad * 2), h: Math.max(1, bh + pad * 2) };
 }
 
 function _initInlineSvgZoomPan(svg, origX, origY, origW, origH) {
   if (!svg) return null;
-  let fitView = _computeInlineFitView(svg, origX, origY, origW, origH);
+  let fitView = _computeInlineFitView(svg, origX, origY, origW, origH, true);
   let vx = fitView.x, vy = fitView.y, vw = fitView.w, vh = fitView.h;
   let isPanning = false;
   let panStart = null;
@@ -1811,9 +1929,13 @@ function _initInlineSvgZoomPan(svg, origX, origY, origW, origH) {
     const maxW = Math.max(minW, Math.min(Math.max(1, origW) * 1.25, fitView.w * 8));
     return Math.max(minW, Math.min(maxW, value));
   };
-  const wheelZoomFactor = (deltaY) => {
-    const f = Math.exp(-deltaY * 0.0011);
-    return Math.max(0.92, Math.min(1.08, f));
+  const wheelZoomFactor = (e) => {
+    const raw = Number.isFinite(e.deltaY) ? e.deltaY : 0;
+    if (e.ctrlKey) {
+      return Math.exp(Math.max(-0.25, Math.min(0.25, -raw * 0.06)));
+    }
+    const delta = Math.max(-120, Math.min(120, raw));
+    return Math.max(0.92, Math.min(1.08, Math.exp(-delta * 0.0011)));
   };
 
   function applyPreserveAspectRatio() {
@@ -1822,6 +1944,7 @@ function _initInlineSvgZoomPan(svg, origX, origY, origW, origH) {
 
   function applyVB() {
     svg.setAttribute("viewBox", `${vx} ${vy} ${vw} ${vh}`);
+    _updateMinimapViewport(vx, vy, vw, vh);
     const ind = document.getElementById("zoom-indicator");
     if (ind) ind.textContent = `${Math.round((origW / Math.max(vw, 1e-6)) * 100)}%`;
   }
@@ -1874,7 +1997,7 @@ function _initInlineSvgZoomPan(svg, origX, origY, origW, origH) {
   svg.addEventListener("wheel", (e) => {
     e.preventDefault();
     e.stopPropagation();
-    zoomBy(wheelZoomFactor(e.deltaY), e.clientX, e.clientY);
+    zoomBy(wheelZoomFactor(e), e.clientX, e.clientY);
   }, { passive: false });
 
   svg.addEventListener("pointerdown", (e) => {
@@ -1953,8 +2076,14 @@ function _initInlineSvgZoomPan(svg, origX, origY, origW, origH) {
     centerOn(worldX, worldY, zoomScale = 2.2) {
       centerOnWorld(worldX, worldY, zoomScale);
     },
+    fitWrap() { /* svgWrap fills container via CSS; no manual sizing needed */ },
+    centerAt(worldX, worldY) {
+      vx = worldX - vw / 2;
+      vy = worldY - vh / 2;
+      applyVB();
+    },
     reset() {
-      fitView = _computeInlineFitView(svg, origX, origY, origW, origH);
+      fitView = _computeInlineFitView(svg, origX, origY, origW, origH, false);
       vx = fitView.x;
       vy = fitView.y;
       vw = fitView.w;
@@ -2311,6 +2440,9 @@ function renderProfileModal(profile, username) {
   const sub         = [profile?.department, profile?.position].filter(Boolean).join(" · ") || username;
   const statusLabel = profile?.user_status ? STATUS_LABELS[profile.user_status] : null;
   const statusClass = profile?.user_status ? STATUS_CLASSES[profile.user_status] : "";
+  const avatarInner = profile?.avatar_url
+    ? `<img src="${profile.avatar_url}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%;display:block">`
+    : initials;
 
   container.innerHTML = `
     <div class="profile-modal-header">
@@ -2321,7 +2453,7 @@ function renderProfileModal(profile, username) {
     </div>
     <div class="profile-modal-body">
       <div class="profile-modal-hero">
-        <div class="profile-modal-avatar">${initials}</div>
+        <div class="profile-modal-avatar">${avatarInner}</div>
         <div>
           <div class="profile-modal-name">${displayName}</div>
           <div class="profile-modal-sub">${sub}</div>
@@ -2624,7 +2756,13 @@ function renderFloorPlacesList() {
     .sort((a, b) => String(a.desk?.label || "").localeCompare(String(b.desk?.label || ""), "ru", { numeric: true, sensitivity: "base" }));
 
   if (!entries.length) {
-    list.innerHTML = '<p class="empty" style="padding:20px 16px;font-size:12px">Нет мест по выбранным фильтрам и интервалу</p>';
+    list.innerHTML = `
+      <div class="empty-state-block">
+        <i data-lucide="search-x" class="empty-state-icon"></i>
+        <p class="empty-state-title">Нет доступных мест</p>
+        <p class="empty-state-hint">Попробуйте изменить фильтры или временной интервал.</p>
+      </div>`;
+    if (window.lucide) lucide.createIcons({ el: list });
     if (count) count.textContent = "";
     updateSheetMiniSummary();
     return;
@@ -2883,16 +3021,34 @@ function applyUnifiedDeskFilter() {
   const markers = document.querySelectorAll(".desk-tile");
   if (!markers.length) return;
   const teamDeskIds = _teamDeskIdsForCurrentWindow();
+  let visibleCount = 0;
   markers.forEach((marker) => {
     const desk = _findDeskByMarkerData(marker.dataset?.deskId || "", marker.dataset?.deskLabel || "");
     if (!desk) {
       marker.classList.remove("filtered-out");
+      visibleCount++;
       return;
     }
     const visual = _deskAvailabilityState(desk);
     const show = _deskPassesFilters(desk, visual.kind, teamDeskIds);
     marker.classList.toggle("filtered-out", !show);
+    if (show) visibleCount++;
   });
+
+  // Safety net: if all tiles are hidden by filters, reset filters and re-run
+  if (visibleCount === 0 && markers.length > 0) {
+    console.warn("[DeskBook] All desk tiles filtered out — resetting filters to show all.");
+    _statusFilter = "all";
+    _activeSpaceFilters.clear();
+    _favFilterActive = false;
+    _teamFilterActive = false;
+    localStorage.setItem(LS_KEYS.statusFilter, "all");
+    localStorage.setItem(LS_KEYS.spaceFilters, "[]");
+    localStorage.setItem(LS_KEYS.favFilter, "0");
+    localStorage.setItem(LS_KEYS.teamFilter, "0");
+    markers.forEach((marker) => marker.classList.remove("filtered-out"));
+    renderFilterChips(state.desks || []);
+  }
 }
 
 function renderFilterChips(desks) {
@@ -2902,7 +3058,14 @@ function renderFilterChips(desks) {
   bar.style.display = "";
   bar.innerHTML = "";
 
-  const makeChip = ({ label, active, color, onClick, dot = false }) => {
+  // Count desks per status kind
+  const _statusCounts = { all: items.length };
+  for (const desk of items) {
+    const k = _deskAvailabilityState(desk).kind;
+    _statusCounts[k] = (_statusCounts[k] || 0) + 1;
+  }
+
+  const makeChip = ({ label, active, color, onClick, dot = false, icon = null, count = null }) => {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = `filter-chip${active ? " active" : ""}`;
@@ -2914,9 +3077,21 @@ function renderFilterChips(desks) {
       dotEl.style.backgroundColor = active ? "#fff" : color;
       chip.append(dotEl);
     }
+    if (icon) {
+      const ico = document.createElement("i");
+      ico.setAttribute("data-lucide", icon);
+      ico.style.cssText = "width:13px;height:13px;flex-shrink:0;pointer-events:none";
+      chip.append(ico);
+    }
     const txt = document.createElement("span");
     txt.textContent = label;
     chip.append(txt);
+    if (count != null) {
+      const badge = document.createElement("span");
+      badge.className = "filter-chip-count";
+      badge.textContent = count;
+      chip.append(badge);
+    }
     chip.addEventListener("click", onClick);
     return chip;
   };
@@ -2929,6 +3104,7 @@ function renderFilterChips(desks) {
         active,
         color: _STATUS_COLORS[kind],
         dot: kind !== "all",
+        count: _statusCounts[kind] ?? 0,
         onClick: () => {
           _statusFilter = kind;
           _saveFilterState();
@@ -2997,7 +3173,8 @@ function renderFilterChips(desks) {
 
   bar.append(
     makeChip({
-      label: "👥 Команда",
+      label: "Команда",
+      icon: "users",
       active: _teamFilterActive,
       color: "#7c3aed",
       onClick: () => {
@@ -3010,6 +3187,7 @@ function renderFilterChips(desks) {
       },
     }),
   );
+  if (window.lucide) lucide.createIcons({ el: bar });
 }
 
 function renderPlanMarkersFiltered() {
@@ -3020,14 +3198,6 @@ function renderPlanMarkersFiltered() {
 
 quickDateTodayBtn?.addEventListener("click", () => setDatePreset("today"));
 quickDateTomorrowBtn?.addEventListener("click", () => setDatePreset("tomorrow"));
-quickDateCustomBtn?.addEventListener("click", () => {
-  _datePreset = "custom";
-  _applyDatePresetButtons();
-  updateTimeWindowIndicator();
-  if (typeof dateInput?.showPicker === "function") {
-    try { dateInput.showPicker(); } catch { /* no-op */ }
-  }
-});
 
 officeSelect.addEventListener("change", (e) => {
   localStorage.setItem("dk_office", e.target.value);
@@ -3325,6 +3495,7 @@ async function init() {
   updateFitButtonsUI();
   _notifLoad();
   await checkApi();
+  apiRequest("/users/me").then(me => { if (me?.avatar_url) _setHeaderAvatar(me.avatar_url); }).catch(() => {});
   await loadOffices();
 
   const savedOffice = localStorage.getItem("dk_office");

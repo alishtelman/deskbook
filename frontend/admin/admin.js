@@ -97,6 +97,133 @@ const policyMaxDur       = document.getElementById("policy-max-dur");
 const policyNoshow       = document.getElementById("policy-noshow");
 const policyMaxPerDay    = document.getElementById("policy-max-per-day");
 
+// ── Modal helpers ─────────────────────────────────────────────────────────────
+function openModal(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.setAttribute("aria-hidden", "false");
+  el.classList.add("open");
+  // Focus first input
+  const first = el.querySelector("input, select");
+  if (first) setTimeout(() => first.focus(), 60);
+  if (window.lucide) lucide.createIcons({ nodes: [el] });
+}
+function closeModal(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.setAttribute("aria-hidden", "true");
+  el.classList.remove("open");
+  // Reset edit state when modal is dismissed
+  if (id === "modal-office")  _editOfficeId = null;
+  if (id === "modal-floor")   _editFloorId  = null;
+  if (id === "modal-policy")  _editPolicyId = null;
+  if (id === "modal-dept")    _editDeptId   = null;
+}
+// Close on backdrop click or [data-close] button
+document.addEventListener("click", (e) => {
+  const closeBtn = e.target.closest("[data-close]");
+  if (closeBtn) { closeModal(closeBtn.dataset.close); return; }
+  if (e.target.classList.contains("adm-modal-overlay")) {
+    closeModal(e.target.id);
+  }
+});
+// Close on Escape
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    document.querySelectorAll(".adm-modal-overlay.open").forEach(el => closeModal(el.id));
+  }
+});
+
+// Open buttons (create mode — no item)
+document.getElementById("open-office-modal")?.addEventListener("click", () => openOfficeModal(null));
+document.getElementById("open-floor-modal")?.addEventListener("click", () => openFloorModal(null));
+document.getElementById("open-upload-plan-modal")?.addEventListener("click", () => openModal("modal-upload-plan"));
+document.getElementById("open-policy-modal")?.addEventListener("click", () => openPolicyModal(null));
+document.getElementById("open-dept-modal")?.addEventListener("click", () => openDeptModal(null));
+
+// ── Debounce ──────────────────────────────────────────────────────────────────
+function debounce(fn, ms) {
+  var t;
+  return function () {
+    var args = arguments;
+    clearTimeout(t);
+    t = setTimeout(function () { fn.apply(null, args); }, ms);
+  };
+}
+
+// ── Modal edit state ──────────────────────────────────────────────────────────
+var _editOfficeId   = null;
+var _editFloorId    = null;
+var _editPolicyId   = null;
+var _editDeptId     = null;
+
+function _setModalMode(modalId, titleEl, btnEl, isEdit, createLabel, editLabel) {
+  document.getElementById(titleEl).textContent = isEdit ? editLabel : createLabel;
+  document.getElementById(btnEl).textContent   = isEdit ? "Сохранить" : createLabel;
+}
+
+function openOfficeModal(item) {
+  _editOfficeId = item ? item.id : null;
+  _setModalMode("modal-office", "modal-office-title", "create-office-btn",
+    !!item, "Создать офис", "Редактировать офис");
+  document.getElementById("office-name").value    = item ? (item.name    || "") : "";
+  document.getElementById("office-address").value = item ? (item.address || "") : "";
+  openModal("modal-office");
+}
+
+function openFloorModal(item) {
+  _editFloorId = item ? item.id : null;
+  _setModalMode("modal-floor-title", "modal-floor-title", "create-floor-btn",
+    !!item, "Создать этаж", "Редактировать этаж");
+  document.getElementById("modal-floor-title").textContent = item ? "Редактировать этаж" : "Создать этаж";
+  document.getElementById("create-floor-btn").textContent  = item ? "Сохранить" : "Создать этаж";
+  var offSel = document.getElementById("floor-office-select");
+  if (item && offSel) offSel.value = item.office_id || "";
+  document.getElementById("floor-name").value = item ? (item.name || "") : "";
+  openModal("modal-floor");
+}
+
+function openUploadPlanModal(floorId) {
+  if (floorId && planFloorSelect) planFloorSelect.value = floorId;
+  openModal("modal-upload-plan");
+}
+
+function openPolicyModal(item) {
+  _editPolicyId = item ? item.id : null;
+  document.getElementById("modal-policy-title").textContent = item ? "Редактировать политику" : "Создать политику";
+  document.getElementById("create-policy-btn").textContent  = item ? "Сохранить" : "Создать политику";
+  var offSel = document.getElementById("policy-office-select");
+  if (item && offSel) offSel.value = item.office_id || "";
+  document.getElementById("policy-name").value        = item ? (item.name                    || "")  : "";
+  document.getElementById("policy-min-days").value    = item ? (item.min_days_ahead           ?? 0)  : 0;
+  document.getElementById("policy-max-days").value    = item ? (item.max_days_ahead           ?? 30) : 30;
+  document.getElementById("policy-min-dur").value     = item ? (item.min_duration_minutes     ?? 30) : 30;
+  document.getElementById("policy-max-dur").value     = item ? (item.max_duration_minutes     ?? 480): 480;
+  document.getElementById("policy-noshow").value      = item ? (item.no_show_timeout_minutes  ?? 15) : 15;
+  var mpd = document.getElementById("policy-max-per-day");
+  if (mpd) mpd.value = item ? (item.max_bookings_per_day ?? 1) : 1;
+  // Open advanced section if editing and any advanced field differs from defaults
+  var details = document.getElementById("policy-advanced-details");
+  if (details) {
+    var hasAdvanced = item && (
+      (item.min_duration_minutes ?? 30)  !== 30  ||
+      (item.max_duration_minutes ?? 480) !== 480 ||
+      (item.no_show_timeout_minutes ?? 15) !== 15 ||
+      (item.max_bookings_per_day ?? 1) !== 1
+    );
+    details.open = !!hasAdvanced;
+  }
+  openModal("modal-policy");
+}
+
+function openDeptModal(item) {
+  _editDeptId = item ? item.id : null;
+  document.getElementById("modal-dept-title").textContent = item ? "Редактировать отдел" : "Создать отдел";
+  document.getElementById("add-dept-btn").textContent     = item ? "Сохранить" : "Создать отдел";
+  document.getElementById("dept-name").value = item ? (item.name || "") : "";
+  openModal("modal-dept");
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 const state = {
   offices: [],
@@ -129,6 +256,8 @@ function showAdminUI(username) {
   sidebarUsername.textContent = username;
   applyAdminSidebarState(isAdminSidebarCollapsed(), false);
   if (window.lucide) lucide.createIcons();
+  // Set initial breadcrumb (offices tab is active by default)
+  setBreadcrumbs([{ label: "Офисы", icon: "building-2" }]);
 }
 
 function isAdminSidebarCollapsed() {
@@ -206,6 +335,111 @@ function makeDeleteBtn(label, onClick) {
   const btn = document.createElement("button");
   btn.className = "btn btn-danger btn-sm";
   btn.textContent = label;
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
+// ── Confirm delete modal ───────────────────────────────────────────────────────
+var _confirmCallback = null;
+document.getElementById("confirm-modal-ok").addEventListener("click", function () {
+  closeModal("modal-confirm");
+  if (_confirmCallback) { var cb = _confirmCallback; _confirmCallback = null; cb(); }
+});
+function confirmDelete(title, message, onConfirm) {
+  document.getElementById("confirm-modal-title").textContent = title;
+  document.getElementById("confirm-modal-message").textContent = message;
+  _confirmCallback = onConfirm;
+  openModal("modal-confirm");
+}
+
+// ── Actions menu (⋮) ──────────────────────────────────────────────────────────
+function closeActionsMenus() {
+  document.querySelectorAll(".adm-actions-wrap.open").forEach(function (w) { w.classList.remove("open"); });
+}
+document.addEventListener("click", closeActionsMenus);
+window.addEventListener("scroll", closeActionsMenus, true);
+window.addEventListener("resize", closeActionsMenus);
+
+function positionActionsMenu(btn, menu) {
+  var r = btn.getBoundingClientRect();
+  var menuH = menu.offsetHeight || 120; // estimated before first paint
+  var menuW = menu.offsetWidth  || 164;
+  var GAP   = 4;
+  var vh    = window.innerHeight;
+  var vw    = window.innerWidth;
+
+  // Horizontal: align right edge to button right, clamp to viewport
+  var left = r.right - menuW;
+  if (left < 8) left = 8;
+  if (left + menuW > vw - 8) left = vw - menuW - 8;
+
+  // Vertical: open below by default, flip above if not enough space
+  var top;
+  if (r.bottom + GAP + menuH > vh - 8) {
+    top = r.top - GAP - menuH; // open upward
+  } else {
+    top = r.bottom + GAP;
+  }
+
+  menu.style.left = left + 'px';
+  menu.style.top  = top  + 'px';
+}
+
+function makeActionsMenu(items) {
+  var wrap = document.createElement("div");
+  wrap.className = "adm-actions-wrap";
+
+  var btn = document.createElement("button");
+  btn.className = "btn btn-secondary btn-sm adm-actions-btn";
+  btn.title = "Действия";
+  btn.innerHTML = '<i data-lucide="more-horizontal" style="width:15px;height:15px"></i>';
+
+  var menu = document.createElement("div");
+  menu.className = "adm-actions-menu";
+
+  items.forEach(function (item) {
+    var mi = document.createElement("button");
+    mi.className = "adm-actions-item" + (item.danger ? " danger" : "");
+    mi.innerHTML = '<i data-lucide="' + item.icon + '" style="width:14px;height:14px"></i> ' + item.label;
+    mi.addEventListener("click", function (e) {
+      e.stopPropagation();
+      closeActionsMenus();
+      item.onClick();
+    });
+    menu.append(mi);
+  });
+
+  btn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    var isOpen = wrap.classList.contains("open");
+    closeActionsMenus();
+    if (!isOpen) {
+      // Show first so browser can measure real dimensions, then reposition
+      wrap.classList.add("open");
+      if (window.lucide) lucide.createIcons({ nodes: [wrap] });
+      // rAF ensures menu is rendered before measuring
+      requestAnimationFrame(function() { positionActionsMenu(btn, menu); });
+    }
+  });
+
+  wrap.append(btn, menu);
+  return wrap;
+}
+
+// makeActionCell(primaryEl?, menuItems?) → standardised action cell wrapper
+function makeActionCell(primaryEl, menuItems) {
+  var wrap = document.createElement("div");
+  wrap.className = "adm-action-cell";
+  if (primaryEl) wrap.append(primaryEl);
+  if (menuItems && menuItems.length) wrap.append(makeActionsMenu(menuItems));
+  return wrap;
+}
+
+// makePrimaryBtn(label, icon, onClick) → consistent primary action button
+function makePrimaryBtn(label, icon, onClick) {
+  var btn = document.createElement("button");
+  btn.className = "btn btn-secondary btn-sm adm-primary-action";
+  btn.innerHTML = '<i data-lucide="' + icon + '" style="width:13px;height:13px"></i> ' + label;
   btn.addEventListener("click", onClick);
   return btn;
 }
@@ -293,14 +527,37 @@ async function loadReservations() {
   }
 }
 
+var _anlPeriod = "day";
+
+function renderTrend(elId, pct, invertGood) {
+  var el = document.getElementById(elId);
+  if (!el) return;
+  if (pct === null || pct === undefined) { el.textContent = ""; return; }
+  var up = pct >= 0;
+  var good = invertGood ? !up : up;  // for cancelled/noshow: up is bad
+  var arrow = up ? "↑" : "↓";
+  var abs = Math.abs(pct);
+  el.textContent = arrow + " " + abs + "%";
+  el.className = "anl-trend " + (good ? "anl-trend-up" : "anl-trend-down");
+}
+
 async function loadAnalytics() {
   try {
-    const data = await apiRequest("/analytics");
+    const data = await apiRequest("/analytics?period=" + _anlPeriod);
+
+    var labels = { day: "сегодня", week: "за неделю", month: "за месяц" };
+    var lbl = document.getElementById("kpi-today-label");
+    if (lbl) lbl.textContent = "Бронирований " + (labels[_anlPeriod] || "");
 
     document.getElementById("kpi-today").textContent     = data.total_today;
     document.getElementById("kpi-active").textContent    = data.total_active;
     document.getElementById("kpi-cancelled").textContent = data.total_cancelled;
     document.getElementById("kpi-noshow").textContent    = data.noshow_rate + "%";
+
+    renderTrend("trend-today",     data.trend_today,     false);
+    renderTrend("trend-active",    data.trend_active,    false);
+    renderTrend("trend-cancelled", data.trend_cancelled, true);
+    renderTrend("trend-noshow",    data.trend_noshow,    true);
 
     const occupancyEl = document.getElementById("occupancy-list");
     occupancyEl.innerHTML = "";
@@ -370,6 +627,98 @@ async function loadAll() {
   await loadAnalytics();
 }
 
+// ── Skeleton loading ──────────────────────────────────────────────────────────
+
+var SKELETON_COLS = {
+  "offices-body":      6,
+  "floors-body":       5,
+  "desks-body":        7,
+  "policies-body":     6,
+  "reservations-body": 7,
+  "departments-body":  4,
+  "users-body":        8,
+};
+
+function showSkeleton(tbodyId) {
+  var tbody = document.getElementById(tbodyId);
+  if (!tbody) return;
+  var cols = SKELETON_COLS[tbodyId] || 4;
+  var rows = "";
+  for (var i = 0; i < 3; i++) {
+    rows += "<tr>";
+    for (var j = 0; j < cols; j++) {
+      rows += '<td><span class="adm-skeleton"></span></td>';
+    }
+    rows += "</tr>";
+  }
+  tbody.innerHTML = rows;
+}
+
+function showSkeletonForTab(tab) {
+  var map = {
+    offices:      ["offices-body"],
+    floors:       ["floors-body"],
+    desks:        ["desks-body"],
+    policies:     ["policies-body"],
+    reservations: ["reservations-body"],
+    departments:  ["departments-body"],
+    users:        ["users-body"],
+  };
+  (map[tab] || []).forEach(showSkeleton);
+}
+
+// ── Auto-refresh ──────────────────────────────────────────────────────────────
+
+var AUTO_REFRESH_MS = 60000;  // 1 minute
+var _autoRefreshTimer = null;
+var _currentTab = "offices";
+var _isAutoRefresh = false;
+
+var TAB_LOADERS = {
+  offices:      function() { return loadOffices(); },
+  floors:       function() { return loadFloors(); },
+  desks:        function() { return loadDesks(); },
+  policies:     function() { return loadPolicies(); },
+  reservations: function() { return loadReservations(); },
+  departments:  function() { return loadDepartments(); },
+  analytics:    function() { return loadAnalytics(); },
+  users:        function() { return loadUsers(); },
+};
+
+function startAutoRefresh(tab) {
+  stopAutoRefresh();
+  var loader = TAB_LOADERS[tab];
+  if (!loader) return;
+  _autoRefreshTimer = setInterval(async function() {
+    _isAutoRefresh = true;
+    spinRefreshBtn(tab, true);
+    showSkeletonForTab(tab);
+    try {
+      await loader();
+      showToast("Данные обновлены", "info");
+    } finally {
+      _isAutoRefresh = false;
+      spinRefreshBtn(tab, false);
+    }
+  }, AUTO_REFRESH_MS);
+}
+
+function stopAutoRefresh() {
+  if (_autoRefreshTimer) { clearInterval(_autoRefreshTimer); _autoRefreshTimer = null; }
+}
+
+// ── Refresh button spin animation ─────────────────────────────────────────────
+
+function spinRefreshBtn(tab, spinning) {
+  var idMap = {
+    offices: "refresh-offices", floors: "refresh-floors", desks: "refresh-desks",
+    policies: "refresh-policies", reservations: "refresh-reservations",
+    departments: "refresh-departments", analytics: "refresh-analytics", users: "refresh-users",
+  };
+  var btn = document.getElementById(idMap[tab]);
+  if (btn) btn.classList.toggle("adm-refresh-spinning", spinning);
+}
+
 // ── Render helpers ────────────────────────────────────────────────────────────
 function getOfficeName(officeId) {
   var o = state.offices.find(function (o) { return o.id === officeId; });
@@ -384,71 +733,172 @@ function getFloorName(floorId) {
 // ── Render tables ─────────────────────────────────────────────────────────────
 function renderOfficesTable() {
   officesBody.innerHTML = "";
-  if (!state.offices.length) {
-    officesBody.innerHTML = '<tr><td colspan="4" class="empty">Нет офисов.</td></tr>';
+  var q = (document.getElementById("offices-search")?.value || "").trim().toLowerCase();
+  var offices = q
+    ? state.offices.filter(function (o) {
+        return o.name.toLowerCase().includes(q) || (o.address || "").toLowerCase().includes(q);
+      })
+    : state.offices;
+  if (!offices.length) {
+    officesBody.innerHTML = '<tr><td colspan="6" class="empty">' + (q ? "Ничего не найдено." : "Нет офисов.") + '</td></tr>';
     renderPagination('offices-pagination', 0, 'offices');
     return;
   }
-  var slice = pageSlice(state.offices, 'offices');
+  var slice = pageSlice(offices, 'offices');
   slice.forEach(function (o) {
+    var floorCount = state.floors.filter(function (f) { return f.office_id === o.id; }).length;
+    var deskCount = state.desks.filter(function (d) {
+      return state.floors.some(function (f) { return f.office_id === o.id && f.id === d.floor_id; });
+    }).length;
     var tr = document.createElement("tr");
-    tr.innerHTML = "<td>" + o.id + "</td><td>" + o.name + "</td><td>" + (o.address || "—") + "</td><td></td>";
-    tr.querySelector("td:last-child").append(
-      makeDeleteBtn("Удалить", async function () {
-        if (!confirm("Удалить офис «" + o.name + "»?")) return;
-        try {
-          await apiRequest("/offices/" + o.id, { method: "DELETE" });
-          showToast("Офис «" + o.name + "» удалён.", "success");
-          await loadAll();
-        } catch (e) {
-          showToast("Ошибка: " + e.message, "error");
-        }
-      })
-    );
+    tr.innerHTML = "<td>" + o.id + "</td><td>" + o.name + "</td><td>" + (o.address || "—") + "</td>" +
+      "<td style='text-align:center'><span class='adm-badge'>" + floorCount + "</span></td>" +
+      "<td style='text-align:center'><span class='adm-badge'>" + deskCount + "</span></td>" +
+      "<td></td>";
+    tr.querySelector("td:last-child").append(makeActionCell(
+      makePrimaryBtn("Этажи", "layers", function () { drillToFloors(o); }),
+      [
+        { label: "Редактировать", icon: "pencil", onClick: function () { openOfficeModal(o); } },
+        { label: "Удалить", icon: "trash-2", danger: true, onClick: function () {
+          confirmDelete("Удалить офис?", "Вы уверены, что хотите удалить офис «" + o.name + "»? Это действие нельзя отменить.", async function () {
+            try {
+              await apiRequest("/offices/" + o.id, { method: "DELETE" });
+              showToast("Офис «" + o.name + "» удалён.", "success");
+              await loadAll();
+            } catch (e) { showToast("Ошибка: " + e.message, "error"); }
+          });
+        }},
+      ]
+    ));
     officesBody.append(tr);
   });
-  renderPagination('offices-pagination', state.offices.length, 'offices');
+  renderPagination('offices-pagination', offices.length, 'offices');
+}
+
+function drillToFloors(office) {
+  _floorsOfficeFilter = office.id;
+  // Switch to floors tab without clearing the filter
+  document.querySelectorAll(".nav-item").forEach(function (b) { b.classList.remove("active"); });
+  document.querySelectorAll(".tab-content").forEach(function (t) { t.classList.add("hidden"); });
+  var btn = document.querySelector(".nav-item[data-tab='floors']");
+  if (btn) btn.classList.add("active");
+  document.getElementById("tab-floors").classList.remove("hidden");
+  document.dispatchEvent(new CustomEvent("admin:tab-change", { detail: { tab: "floors" } }));
+  renderFloorsTable();
+  setBreadcrumbs([
+    { label: "Офисы", icon: "building-2", onClick: function () { switchTab("offices"); } },
+    { label: office.name },
+    { label: "Этажи", icon: "layers" },
+  ]);
 }
 
 function renderFloorsTable() {
   floorsBody.innerHTML = "";
-  if (!state.floors.length) {
+  var q        = (document.getElementById("floors-search")?.value || "").trim().toLowerCase();
+  var offSel   = document.getElementById("floors-office-filter");
+  var offFilt  = _floorsOfficeFilter || (offSel ? Number(offSel.value) || null : null);
+  var floors   = state.floors;
+  if (offFilt) floors = floors.filter(function (f) { return f.office_id === offFilt; });
+  if (q)       floors = floors.filter(function (f) { return f.name.toLowerCase().includes(q) || getOfficeName(f.office_id).toLowerCase().includes(q); });
+
+  // Filter badge
+  var filterBadge = document.getElementById("floors-filter-badge");
+  if (_floorsOfficeFilter && filterBadge) {
+    var oName = getOfficeName(_floorsOfficeFilter);
+    filterBadge.innerHTML = 'Офис: <strong>' + oName + '</strong> &nbsp;' +
+      '<button class="bc-clear-filter" title="Сбросить фильтр">' +
+        '<i data-lucide="x" style="width:11px;height:11px"></i>' +
+      '</button>';
+    filterBadge.style.display = "";
+    filterBadge.querySelector(".bc-clear-filter").addEventListener("click", function () {
+      switchTab("floors");
+    });
+    if (window.lucide) lucide.createIcons({ nodes: [filterBadge] });
+  } else if (filterBadge) {
+    filterBadge.style.display = "none";
+  }
+
+  if (!floors.length) {
     floorsBody.innerHTML = '<tr><td colspan="5" class="empty">Нет этажей.</td></tr>';
     renderPagination('floors-pagination', 0, 'floors');
     return;
   }
-  var slice = pageSlice(state.floors, 'floors');
+  var slice = pageSlice(floors, 'floors');
   slice.forEach(function (f) {
     var tr = document.createElement("tr");
-    var planCell = f.plan_url
-      ? '<a href="' + f.plan_url + '" target="_blank" rel="noopener">Посмотреть</a>'
-      : "Нет";
-    tr.innerHTML = "<td>" + f.id + "</td><td>" + getOfficeName(f.office_id) + "</td><td>" + f.name + "</td><td>" + planCell + "</td><td></td>";
-    tr.querySelector("td:last-child").append(
-      makeDeleteBtn("Удалить", async function () {
-        if (!confirm("Удалить этаж «" + f.name + "»?")) return;
-        try {
-          await apiRequest("/floors/" + f.id, { method: "DELETE" });
-          showToast("Этаж «" + f.name + "» удалён.", "success");
-          await loadAll();
-        } catch (e) {
-          showToast("Ошибка: " + e.message, "error");
-        }
-      })
-    );
+    tr.innerHTML = "<td>" + f.id + "</td><td>" + getOfficeName(f.office_id) + "</td><td>" + f.name + "</td><td></td><td></td>";
+
+    // Plan column — primary action
+    var planTd = tr.querySelectorAll("td")[3];
+    var planPrimary;
+    if (f.plan_url) {
+      planPrimary = document.createElement("a");
+      planPrimary.href = f.plan_url;
+      planPrimary.target = "_blank";
+      planPrimary.rel = "noopener";
+      planPrimary.className = "adm-plan-btn";
+      planPrimary.innerHTML = '<i data-lucide="map" style="width:13px;height:13px"></i> Открыть план';
+    } else {
+      planPrimary = document.createElement("span");
+      planPrimary.className = "adm-plan-none";
+      var uploadCta = document.createElement("button");
+      uploadCta.className = "adm-plan-upload-cta";
+      uploadCta.innerHTML = '<i data-lucide="upload" style="width:12px;height:12px"></i> Загрузить план';
+      uploadCta.addEventListener("click", function () { openUploadPlanModal(f.id); });
+      planPrimary.append(uploadCta);
+    }
+    planTd.append(planPrimary);
+
+    // Actions column — secondary actions only
+    tr.querySelector("td:last-child").append(makeActionsMenu([
+      { label: "Редактировать", icon: "pencil", onClick: function () { openFloorModal(f); } },
+      { label: f.plan_url ? "Заменить план" : "Загрузить план", icon: "upload", onClick: function () { openUploadPlanModal(f.id); } },
+      { label: "Удалить", icon: "trash-2", danger: true, onClick: function () {
+        confirmDelete("Удалить этаж?", "Вы уверены, что хотите удалить этаж «" + f.name + "»? Это действие нельзя отменить.", async function () {
+          try {
+            await apiRequest("/floors/" + f.id, { method: "DELETE" });
+            showToast("Этаж «" + f.name + "» удалён.", "success");
+            await loadAll();
+          } catch (e) { showToast("Ошибка: " + e.message, "error"); }
+        });
+      }},
+    ]));
     floorsBody.append(tr);
   });
-  renderPagination('floors-pagination', state.floors.length, 'floors');
+  renderPagination('floors-pagination', floors.length, 'floors');
+}
+
+function _populateDeskFloorFilter() {
+  var sel = document.getElementById("desks-floor-filter");
+  if (!sel) return;
+  var val = sel.value;
+  sel.innerHTML = '<option value="">Все этажи</option>';
+  state.floors.forEach(function (f) {
+    var opt = document.createElement("option");
+    opt.value = f.id;
+    opt.textContent = f.name;
+    sel.append(opt);
+  });
+  if (val) sel.value = val;
 }
 
 function renderDesksTable() {
   if (!desksBody) return;
+  _populateDeskFloorFilter();
+  var search = (document.getElementById("desks-search")?.value || "").toLowerCase().trim();
+  var floorId = document.getElementById("desks-floor-filter")?.value || "";
+  var items = state.desks.filter(function (d) {
+    if (floorId && String(d.floor_id) !== String(floorId)) return false;
+    if (search && !String(d.label || "").toLowerCase().includes(search)) return false;
+    return true;
+  });
   desksBody.innerHTML = "";
-  if (!state.desks.length) {
+  if (!items.length) {
     desksBody.innerHTML = '<tr><td colspan="7" class="empty">Нет рабочих мест.</td></tr>';
+    renderPagination('desks-pagination', 0, 'desks');
     return;
   }
-  state.desks.forEach(function (d) {
+  items.forEach(function (d) {
     var tr = document.createElement("tr");
     tr.innerHTML = (
       "<td>" + d.id + "</td>" +
@@ -460,12 +910,10 @@ function renderDesksTable() {
       "<td></td>"
     );
     var actionCell = tr.querySelector("td:last-child");
-    var btnRow = document.createElement("div");
-    btnRow.className = "btn-row";
 
     var qrBtn = document.createElement("button");
-    qrBtn.className = "btn btn-secondary btn-sm";
-    qrBtn.textContent = "QR";
+    qrBtn.className = "btn btn-secondary btn-sm adm-primary-action";
+    qrBtn.innerHTML = '<i data-lucide="qr-code" style="width:13px;height:13px"></i> QR';
     qrBtn.title = "Показать QR-код для места «" + d.label + "»";
     qrBtn.addEventListener("click", async function () {
       var token = getToken();
@@ -485,21 +933,20 @@ function renderDesksTable() {
       }
     });
 
-    var deleteBtn = makeDeleteBtn("Удалить", async function () {
-      if (!confirm("Удалить место «" + d.label + "»?")) return;
-      try {
-        await apiRequest("/desks/" + d.id, { method: "DELETE" });
-        showToast("Место «" + d.label + "» удалено.", "success");
-        await loadDesks();
-      } catch (e) {
-        showToast("Ошибка: " + e.message, "error");
-      }
-    });
-
-    btnRow.append(qrBtn, deleteBtn);
-    actionCell.append(btnRow);
+    actionCell.append(makeActionCell(qrBtn, [
+      { label: "Удалить", icon: "trash-2", danger: true, onClick: function () {
+        confirmDelete("Удалить место?", "Вы уверены, что хотите удалить место «" + d.label + "»? Это действие нельзя отменить.", async function () {
+          try {
+            await apiRequest("/desks/" + d.id, { method: "DELETE" });
+            showToast("Место «" + d.label + "» удалено.", "success");
+            await loadDesks();
+          } catch (e) { showToast("Ошибка: " + e.message, "error"); }
+        });
+      }},
+    ]));
     desksBody.append(tr);
   });
+  renderPagination('desks-pagination', items.length, 'desks');
 }
 
 function renderPoliciesTable() {
@@ -522,18 +969,20 @@ function renderPoliciesTable() {
       "<td>" + (p.max_bookings_per_day || 1) + "</td>" +
       "<td></td>"
     );
-    tr.querySelector("td:last-child").append(
-      makeDeleteBtn("Удалить", async function () {
-        if (!confirm("Удалить политику «" + p.name + "»?")) return;
-        try {
-          await apiRequest("/policies/" + p.id, { method: "DELETE" });
-          showToast("Политика «" + p.name + "» удалена.", "success");
-          await loadPolicies();
-        } catch (e) {
-          showToast("Ошибка: " + e.message, "error");
-        }
-      })
-    );
+    tr.querySelector("td:last-child").append(makeActionCell(
+      makePrimaryBtn("Изменить", "pencil", function () { openPolicyModal(p); }),
+      [
+        { label: "Удалить", icon: "trash-2", danger: true, onClick: function () {
+          confirmDelete("Удалить политику?", "Вы уверены, что хотите удалить политику «" + p.name + "»? Это действие нельзя отменить.", async function () {
+            try {
+              await apiRequest("/policies/" + p.id, { method: "DELETE" });
+              showToast("Политика «" + p.name + "» удалена.", "success");
+              await loadPolicies();
+            } catch (e) { showToast("Ошибка: " + e.message, "error"); }
+          });
+        }},
+      ]
+    ));
     policiesBody.append(tr);
   });
   renderPagination('policies-pagination', state.policies.length, 'policies');
@@ -564,7 +1013,17 @@ function renderReservationsTable() {
       "<td></td>"
     );
     if (r.status === "active") {
-      tr.querySelector("td:last-child").append(makeCancelBtn(r.id));
+      var cancelBtn = makePrimaryBtn("Отменить", "x-circle", function () {
+        confirmDelete("Отменить бронирование?", "Вы уверены, что хотите отменить это бронирование?", async function () {
+          try {
+            await apiRequest("/reservations/" + r.id + "/cancel", { method: "POST" });
+            showToast("Бронирование отменено.", "success");
+            await loadReservations();
+          } catch (e) { showToast("Ошибка: " + e.message, "error"); }
+        });
+      });
+      cancelBtn.classList.add("adm-primary-action--danger");
+      tr.querySelector("td:last-child").append(makeActionCell(cancelBtn, []));
     }
     reservationsBody.append(tr);
   });
@@ -573,7 +1032,7 @@ function renderReservationsTable() {
 
 // ── Populate selects ──────────────────────────────────────────────────────────
 function populateOfficeSelects() {
-  [floorOfficeSelect, policyOfficeSelect, document.getElementById("filter-office")].forEach(function (sel) {
+  [floorOfficeSelect, policyOfficeSelect, document.getElementById("filter-office"), document.getElementById("floors-office-filter")].forEach(function (sel) {
     if (!sel) return;
     var val = sel.value;
     var placeholder = sel === document.getElementById("filter-office") ? "Все офисы" : "Выберите офис";
@@ -1402,19 +1861,83 @@ async function saveMapDesks() {
 }
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
-document.querySelectorAll(".nav-item[data-tab]").forEach(function (btn) {
-  btn.addEventListener("click", function () {
-    document.querySelectorAll(".nav-item").forEach(function (b) { b.classList.remove("active"); });
-    document.querySelectorAll(".tab-content").forEach(function (t) { t.classList.add("hidden"); });
-    btn.classList.add("active");
-    document.getElementById("tab-" + btn.dataset.tab).classList.remove("hidden");
-    document.dispatchEvent(new CustomEvent("admin:tab-change", { detail: { tab: btn.dataset.tab } }));
-    if (btn.dataset.tab === "analytics") loadAnalytics();
-    if (btn.dataset.tab === "users") loadUsers();
-    if (btn.dataset.tab === "editor" && typeof populateEdFloorSelect === "function") {
-      populateEdFloorSelect(state.floors, state.offices);
+// ── Breadcrumbs ───────────────────────────────────────────────────────────────
+var TAB_LABELS = {
+  offices:      { label: "Офисы",             icon: "building-2"   },
+  floors:       { label: "Этажи",             icon: "layers"       },
+  editor:       { label: "Редактор карты",    icon: "pencil-ruler" },
+  policies:     { label: "Политики",          icon: "file-text"    },
+  reservations: { label: "Бронирования",      icon: "calendar"     },
+  departments:  { label: "Отделы",            icon: "users"        },
+  users:        { label: "Пользователи",      icon: "user-cog"     },
+  analytics:    { label: "Аналитика",         icon: "bar-chart-2"  },
+};
+
+function setBreadcrumbs(crumbs) {
+  var nav = document.getElementById("admin-breadcrumbs");
+  if (!nav) return;
+  nav.innerHTML = "";
+  crumbs.forEach(function (crumb, i) {
+    var isLast = i === crumbs.length - 1;
+    if (i > 0) {
+      var sep = document.createElement("span");
+      sep.className = "bc-sep";
+      sep.innerHTML = '<i data-lucide="chevron-right" style="width:12px;height:12px"></i>';
+      nav.append(sep);
     }
+    var el;
+    if (!isLast && crumb.onClick) {
+      el = document.createElement("button");
+      el.className = "bc-item bc-link";
+      el.addEventListener("click", crumb.onClick);
+    } else {
+      el = document.createElement("span");
+      el.className = "bc-item" + (isLast ? " bc-current" : "");
+    }
+    if (crumb.icon) {
+      var ico = document.createElement("i");
+      ico.setAttribute("data-lucide", crumb.icon);
+      ico.style.cssText = "width:13px;height:13px";
+      el.append(ico);
+    }
+    el.append(document.createTextNode(" " + crumb.label));
+    nav.append(el);
   });
+  if (window.lucide) lucide.createIcons({ nodes: [nav] });
+}
+
+// Drill-down filter state
+var _floorsOfficeFilter = null;
+
+function switchTab(tabName) {
+  document.querySelectorAll(".nav-item").forEach(function (b) { b.classList.remove("active"); });
+  document.querySelectorAll(".tab-content").forEach(function (t) { t.classList.add("hidden"); });
+  var btn = document.querySelector(".nav-item[data-tab='" + tabName + "']");
+  if (btn) btn.classList.add("active");
+  var tabEl = document.getElementById("tab-" + tabName);
+  if (tabEl) tabEl.classList.remove("hidden");
+
+  // If switching tabs directly (not via drill-down), clear filters
+  if (tabName === "floors") {
+    _floorsOfficeFilter = null;
+    renderFloorsTable();
+  }
+  var meta = TAB_LABELS[tabName] || { label: tabName, icon: null };
+  setBreadcrumbs([{ label: meta.label, icon: meta.icon }]);
+
+  _currentTab = tabName;
+  startAutoRefresh(tabName);
+
+  document.dispatchEvent(new CustomEvent("admin:tab-change", { detail: { tab: tabName } }));
+  if (tabName === "analytics") loadAnalytics();
+  if (tabName === "users") loadUsers();
+  if (tabName === "editor" && typeof populateEdFloorSelect === "function") {
+    populateEdFloorSelect(state.floors, state.offices);
+  }
+}
+
+document.querySelectorAll(".nav-item[data-tab]").forEach(function (btn) {
+  btn.addEventListener("click", function () { switchTab(btn.dataset.tab); });
 });
 
 initAdminSidebarToggle();
@@ -1472,14 +1995,42 @@ logoutBtn.addEventListener("click", function () {
   showToast("Вы вышли из панели администратора.", "info");
 });
 
+// ── Search inputs (debounced) ─────────────────────────────────────────────────
+document.getElementById("offices-search")?.addEventListener("input", debounce(renderOfficesTable, 300));
+document.getElementById("floors-search")?.addEventListener("input", debounce(renderFloorsTable, 300));
+document.getElementById("floors-office-filter")?.addEventListener("change", renderFloorsTable);
+document.getElementById("desks-search")?.addEventListener("input", debounce(renderDesksTable, 300));
+document.getElementById("desks-floor-filter")?.addEventListener("change", renderDesksTable);
+document.getElementById("departments-search")?.addEventListener("input", debounce(renderDepartmentsTable, 300));
+
 // ── Refresh buttons ───────────────────────────────────────────────────────────
-document.getElementById("refresh-offices").addEventListener("click", loadOffices);
-document.getElementById("refresh-floors").addEventListener("click", loadFloors);
-document.getElementById("refresh-desks")?.addEventListener("click", loadDesks);
-document.getElementById("refresh-policies").addEventListener("click", loadPolicies);
-document.getElementById("refresh-reservations").addEventListener("click", loadReservations);
-document.getElementById("refresh-analytics").addEventListener("click", loadAnalytics);
-document.getElementById("refresh-users")?.addEventListener("click", loadUsers);
+
+function makeRefreshHandler(tab, loader) {
+  return async function() {
+    spinRefreshBtn(tab, true);
+    showSkeletonForTab(tab);
+    try { await loader(); } finally { spinRefreshBtn(tab, false); }
+  };
+}
+
+document.getElementById("refresh-offices").addEventListener("click",      makeRefreshHandler("offices",      loadOffices));
+document.getElementById("refresh-floors").addEventListener("click",       makeRefreshHandler("floors",       loadFloors));
+document.getElementById("refresh-desks")?.addEventListener("click",       makeRefreshHandler("desks",        loadDesks));
+document.getElementById("refresh-policies").addEventListener("click",     makeRefreshHandler("policies",     loadPolicies));
+document.getElementById("refresh-reservations").addEventListener("click", makeRefreshHandler("reservations", loadReservations));
+document.getElementById("refresh-analytics").addEventListener("click",    makeRefreshHandler("analytics",    loadAnalytics));
+document.getElementById("refresh-users")?.addEventListener("click",       makeRefreshHandler("users",        loadUsers));
+document.getElementById("refresh-departments")?.addEventListener("click", makeRefreshHandler("departments",  loadDepartments));
+
+document.getElementById("anl-period-group")?.addEventListener("click", function(e) {
+  var btn = e.target.closest(".anl-period-btn");
+  if (!btn) return;
+  _anlPeriod = btn.dataset.period;
+  document.querySelectorAll(".anl-period-btn").forEach(function(b) {
+    b.classList.toggle("active", b === btn);
+  });
+  loadAnalytics();
+});
 document.getElementById("users-search")?.addEventListener("input", renderUsers);
 
 document.getElementById("export-reservations-csv")?.addEventListener("click", function() {
@@ -1495,36 +2046,53 @@ document.getElementById("export-reservations-csv")?.addEventListener("click", fu
   URL.revokeObjectURL(url);
 });
 
-// ── Create office ─────────────────────────────────────────────────────────────
+// ── Create / Update office ────────────────────────────────────────────────────
 document.getElementById("create-office-btn").addEventListener("click", async function () {
   var name = officeName.value.trim();
   if (!name) { showToast("Введите название офиса.", "error"); return; }
   try {
-    await apiRequest("/offices", {
-      method: "POST",
-      body: JSON.stringify({ name: name, address: officeAddress.value.trim() || null }),
-    });
-    showToast("Офис «" + name + "» создан.", "success");
+    if (_editOfficeId) {
+      await apiRequest("/offices/" + _editOfficeId, {
+        method: "PATCH",
+        body: JSON.stringify({ name: name, address: officeAddress.value.trim() || null }),
+      });
+      showToast("Офис «" + name + "» обновлён.", "success");
+    } else {
+      await apiRequest("/offices", {
+        method: "POST",
+        body: JSON.stringify({ name: name, address: officeAddress.value.trim() || null }),
+      });
+      showToast("Офис «" + name + "» создан.", "success");
+    }
     officeName.value = "";
     officeAddress.value = "";
+    _editOfficeId = null;
+    closeModal("modal-office");
     await loadAll();
   } catch (e) {
     showToast("Ошибка: " + e.message, "error");
   }
 });
 
-// ── Create floor ──────────────────────────────────────────────────────────────
+// ── Create / Update floor ─────────────────────────────────────────────────────
 document.getElementById("create-floor-btn").addEventListener("click", async function () {
   var officeId = Number(floorOfficeSelect.value);
   var name = floorName.value.trim();
-  if (!officeId || !name) { showToast("Выберите офис и введите название этажа.", "error"); return; }
+  if (!name) { showToast("Введите название этажа.", "error"); return; }
   try {
-    await apiRequest("/floors", {
-      method: "POST",
-      body: JSON.stringify({ office_id: officeId, name: name }),
-    });
-    showToast("Этаж «" + name + "» создан.", "success");
+    if (_editFloorId) {
+      var body = { name: name };
+      if (officeId) body.office_id = officeId;
+      await apiRequest("/floors/" + _editFloorId, { method: "PATCH", body: JSON.stringify(body) });
+      showToast("Этаж «" + name + "» обновлён.", "success");
+    } else {
+      if (!officeId) { showToast("Выберите офис.", "error"); return; }
+      await apiRequest("/floors", { method: "POST", body: JSON.stringify({ office_id: officeId, name: name }) });
+      showToast("Этаж «" + name + "» создан.", "success");
+    }
     floorName.value = "";
+    _editFloorId = null;
+    closeModal("modal-floor");
     await loadAll();
   } catch (e) {
     showToast("Ошибка: " + e.message, "error");
@@ -1551,6 +2119,7 @@ document.getElementById("upload-plan-btn").addEventListener("click", async funct
     }
     showToast("План этажа загружен.", "success");
     planFile.value = "";
+    closeModal("modal-upload-plan");
     await loadFloors();
     // Auto-refresh placement editor if this floor is currently open
     var selFloor = document.getElementById("placement-floor-select");
@@ -1562,28 +2131,35 @@ document.getElementById("upload-plan-btn").addEventListener("click", async funct
   }
 });
 
-// ── Create policy ─────────────────────────────────────────────────────────────
+// ── Create / Update policy ────────────────────────────────────────────────────
 document.getElementById("create-policy-btn").addEventListener("click", async function () {
   var officeId = Number(policyOfficeSelect.value);
   var name = policyName.value.trim();
-  if (!officeId || !name) { showToast("Выберите офис и введите название политики.", "error"); return; }
+  if (!name) { showToast("Введите название политики.", "error"); return; }
+  var payload = {
+    name: name,
+    min_days_ahead:          Number(policyMinDays.value),
+    max_days_ahead:          Number(policyMaxDays.value),
+    min_duration_minutes:    Number(policyMinDur.value),
+    max_duration_minutes:    Number(policyMaxDur.value),
+    no_show_timeout_minutes: Number(policyNoshow.value),
+    max_bookings_per_day:    Number(policyMaxPerDay && policyMaxPerDay.value) || 1,
+  };
   try {
-    await apiRequest("/policies", {
-      method: "POST",
-      body: JSON.stringify({
-        office_id: officeId,
-        name: name,
-        min_days_ahead: Number(policyMinDays.value),
-        max_days_ahead: Number(policyMaxDays.value),
-        min_duration_minutes: Number(policyMinDur.value),
-        max_duration_minutes: Number(policyMaxDur.value),
-        no_show_timeout_minutes: Number(policyNoshow.value),
-        max_bookings_per_day: Number(policyMaxPerDay && policyMaxPerDay.value) || 1,
-      }),
-    });
-    showToast("Политика «" + name + "» создана.", "success");
+    if (_editPolicyId) {
+      if (officeId) payload.office_id = officeId;
+      await apiRequest("/policies/" + _editPolicyId, { method: "PATCH", body: JSON.stringify(payload) });
+      showToast("Политика «" + name + "» обновлена.", "success");
+    } else {
+      if (!officeId) { showToast("Выберите офис.", "error"); return; }
+      payload.office_id = officeId;
+      await apiRequest("/policies", { method: "POST", body: JSON.stringify(payload) });
+      showToast("Политика «" + name + "» создана.", "success");
+    }
     policyName.value = "";
     if (policyMaxPerDay) policyMaxPerDay.value = "1";
+    _editPolicyId = null;
+    closeModal("modal-policy");
     await loadPolicies();
   } catch (e) {
     showToast("Ошибка: " + e.message, "error");
@@ -1593,6 +2169,42 @@ document.getElementById("create-policy-btn").addEventListener("click", async fun
 // ── Departments ───────────────────────────────────────────────────────────────
 
 // ── Users management ──────────────────────────────────────────────────────────
+
+var _AVATAR_PALETTE = [
+  '#2563eb','#7c3aed','#0891b2','#059669','#d97706',
+  '#dc2626','#be185d','#4f46e5','#0f766e','#b45309',
+];
+
+function usernameColor(username) {
+  var hash = 0;
+  for (var i = 0; i < username.length; i++) hash = (hash * 31 + username.charCodeAt(i)) | 0;
+  return _AVATAR_PALETTE[Math.abs(hash) % _AVATAR_PALETTE.length];
+}
+
+function makeInitialsSpan(initials, username) {
+  var span = document.createElement('span');
+  span.className = 'usr-avatar usr-avatar-initials';
+  span.textContent = initials;
+  span.style.background = usernameColor(username);
+  return span;
+}
+
+function buildUserAvatar(avatarUrl, initials, username) {
+  // Normalize /static/... URLs to /api/static/... for admin proxy
+  var src = avatarUrl ? avatarUrl.replace(/^\/static\//, '/api/static/') : null;
+
+  if (!src) return makeInitialsSpan(initials, username);
+
+  var img = document.createElement('img');
+  img.className = 'usr-avatar usr-avatar-img';
+  img.alt = '';
+  img.src = src;
+  img.addEventListener('error', function() {
+    img.replaceWith(makeInitialsSpan(initials, username));
+  }, { once: true });
+  return img;
+}
+
 var _allUsers = [];
 
 async function loadUsers() {
@@ -1614,32 +2226,72 @@ function renderUsers() {
   var tbody = document.getElementById("users-body");
   if (!tbody) return;
   var slice = pageSlice(filtered, 'users');
-  tbody.innerHTML = slice.map(function(u) {
-    return (
-      '<tr style="opacity:' + (u.is_active === false ? '0.5' : '1') + '">' +
-        '<td>' + u.id + '</td>' +
-        '<td><strong>' + u.username + '</strong></td>' +
-        '<td style="font-size:12px;color:var(--text-2)">' + (u.email || '—') + '</td>' +
-        '<td>' + (u.full_name || '—') + '</td>' +
-        '<td>' + (u.department || '—') + '</td>' +
-        '<td>' +
-          '<select class="desk-select" style="font-size:12px;padding:2px 6px" onchange="adminSetRole(\'' + u.username + '\',this.value)">' +
-            '<option value="user"' + (u.role === 'user' ? ' selected' : '') + '>user</option>' +
-            '<option value="admin"' + (u.role === 'admin' ? ' selected' : '') + '>admin</option>' +
-          '</select>' +
-        '</td>' +
-        '<td><span style="font-size:11px;background:var(--bg-2);padding:2px 6px;border-radius:4px">' + (u.user_status || 'available') + '</span></td>' +
-        '<td style="text-align:center">' +
-          '<button onclick="adminToggleActive(\'' + u.username + '\',' + !!u.is_active + ')" ' +
-          'class="btn btn-secondary btn-sm" style="font-size:11px;padding:2px 8px">' +
-          (u.is_active === false ? '&#10003; Активировать' : '&#8856; Заблокировать') + '</button>' +
-        '</td>' +
-        '<td>' +
-          '<button onclick="adminDeleteUser(\'' + u.username + '\')" class="btn btn-secondary btn-sm" style="font-size:11px;padding:2px 6px;color:#dc2626">Удалить</button>' +
-        '</td>' +
-      '</tr>'
+  if (!slice.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="empty">Нет пользователей</td></tr>';
+    renderPagination('users-pagination', filtered.length, 'users');
+    return;
+  }
+  tbody.innerHTML = "";
+  slice.forEach(function(u) {
+    var tr = document.createElement("tr");
+    tr.style.opacity = u.is_active === false ? "0.5" : "1";
+
+    var roleSelect = '<select class="desk-select" style="font-size:12px;padding:2px 6px" onchange="adminSetRole(\'' + u.username + '\',this.value)">' +
+      '<option value="user"' + (u.role === 'user' ? ' selected' : '') + '>user</option>' +
+      '<option value="admin"' + (u.role === 'admin' ? ' selected' : '') + '>admin</option>' +
+      '</select>';
+    var statusBadge = '<span style="font-size:11px;background:var(--bg-2);padding:2px 6px;border-radius:4px">' + (u.user_status || 'available') + '</span>';
+    var toggleLbl = u.is_active === false ? '✓ Активировать' : '⊘ Заблокировать';
+
+    var initials = (u.full_name || u.username || '?').trim().split(/\s+/).slice(0, 2).map(function(w) { return w[0]; }).join('').toUpperCase();
+
+    var clientOrigin = window.location.protocol + '//' + window.location.hostname;
+    var profileUrl = clientOrigin + '/profile.html?user=' + encodeURIComponent(u.username);
+
+    tr.innerHTML = (
+      '<td>' + u.id + '</td>' +
+      '<td><div class="usr-name-cell"><span class="usr-avatar-slot"></span><a href="' + profileUrl + '" target="_blank" class="usr-name-link"><strong>' + u.username + '</strong></a></div></td>' +
+      '<td style="font-size:12px;color:var(--text-2)">' + (u.email || '—') + '</td>' +
+      '<td>' + (u.full_name || '—') + '</td>' +
+      '<td>' + (u.department || '—') + '</td>' +
+      '<td>' + roleSelect + '</td>' +
+      '<td>' + statusBadge + '</td>' +
+      '<td></td>'
     );
-  }).join('') || '<tr><td colspan="9" class="empty">Нет пользователей</td></tr>';
+
+    // Build avatar with DOM so we can attach a real onerror handler
+    var slot = tr.querySelector(".usr-avatar-slot");
+    if (slot) slot.replaceWith(buildUserAvatar(u.avatar_url, initials, u.username));
+
+    // Toggle button (primary action)
+    var toggleBtn = document.createElement("button");
+    toggleBtn.className = "btn btn-secondary btn-sm adm-primary-action" + (u.is_active === false ? "" : " adm-primary-action--warn");
+    toggleBtn.innerHTML = u.is_active === false
+      ? '<i data-lucide="check-circle" style="width:13px;height:13px"></i> Активировать'
+      : '<i data-lucide="ban" style="width:13px;height:13px"></i> Заблокировать';
+    toggleBtn.addEventListener("click", function() { adminToggleActive(u.username, !!u.is_active); });
+
+    // Action cell: toggle (primary) + ⋮ (delete)
+    tr.querySelector("td:last-child").append(makeActionCell(toggleBtn, [
+      { label: "Удалить", icon: "trash-2", danger: true, onClick: function () {
+        confirmDelete(
+          "Удалить пользователя?",
+          "Вы уверены, что хотите удалить пользователя «" + u.username + "»? Это действие нельзя отменить.",
+          async function () {
+            try {
+              await apiRequest('/admin/users/' + u.username, { method: 'DELETE' });
+              _allUsers = _allUsers.filter(function(x) { return x.username !== u.username; });
+              renderUsers();
+              showToast('Пользователь удалён.', 'success');
+            } catch(e) { showToast('Ошибка: ' + e.message, 'error'); }
+          }
+        );
+      }},
+    ]));
+
+    tbody.append(tr);
+  });
+  if (window.lucide) lucide.createIcons({ nodes: [tbody] });
   renderPagination('users-pagination', filtered.length, 'users');
 }
 
@@ -1662,16 +2314,6 @@ async function adminToggleActive(username, currentlyActive) {
   } catch(e) { showToast('Ошибка: ' + e.message, 'error'); }
 }
 
-async function adminDeleteUser(username) {
-  if (!confirm('Удалить пользователя ' + username + '? Это действие нельзя отменить.')) return;
-  try {
-    await apiRequest('/admin/users/' + username, { method: 'DELETE' });
-    _allUsers = _allUsers.filter(function(u) { return u.username !== username; });
-    renderUsers();
-    showToast('Пользователь удалён.', 'success');
-  } catch(e) { showToast('Ошибка: ' + e.message, 'error'); }
-}
-
 var _allDepartments = [];
 
 async function loadDepartments() {
@@ -1688,52 +2330,60 @@ async function loadDepartments() {
 function renderDepartmentsTable() {
   const tbody = document.getElementById("departments-body");
   if (!tbody) return;
-  if (!_allDepartments.length) {
-    tbody.innerHTML = '<tr><td colspan="2" class="empty">Нет отделов</td></tr>';
+  var q = (document.getElementById("departments-search")?.value || "").trim().toLowerCase();
+  var depts = q
+    ? _allDepartments.filter(function (d) { return d.name.toLowerCase().includes(q); })
+    : _allDepartments;
+  if (!depts.length) {
+    tbody.innerHTML = '<tr><td colspan="2" class="empty">' + (q ? "Ничего не найдено." : "Нет отделов") + '</td></tr>';
     renderPagination('departments-pagination', 0, 'departments');
     return;
   }
   tbody.innerHTML = "";
-  var slice = pageSlice(_allDepartments, 'departments');
+  var slice = pageSlice(depts, 'departments');
   for (const d of slice) {
     const tr = document.createElement("tr");
     const tdName = document.createElement("td");
     tdName.textContent = d.name;
     const tdAct = document.createElement("td");
-    tdAct.append(makeDeleteBtn("Удалить", async function () {
-      if (!confirm("Удалить отдел «" + d.name + "»?")) return;
-      try {
-        await apiRequest("/departments/" + d.id, { method: "DELETE" });
-        showToast("Отдел «" + d.name + "» удалён.", "success");
-        await loadDepartments();
-      } catch (e) {
-        showToast("Ошибка: " + e.message, "error");
-      }
-    }));
+    tdAct.append(makeActionCell(
+      makePrimaryBtn("Изменить", "pencil", function () { openDeptModal(d); }),
+      [
+        { label: "Удалить", icon: "trash-2", danger: true, onClick: function () {
+          confirmDelete("Удалить отдел?", "Вы уверены, что хотите удалить отдел «" + d.name + "»? Это действие нельзя отменить.", async function () {
+            try {
+              await apiRequest("/departments/" + d.id, { method: "DELETE" });
+              showToast("Отдел «" + d.name + "» удалён.", "success");
+              await loadDepartments();
+            } catch (e) { showToast("Ошибка: " + e.message, "error"); }
+          });
+        }},
+      ]
+    ));
     tr.append(tdName, tdAct);
     tbody.append(tr);
   }
-  renderPagination('departments-pagination', _allDepartments.length, 'departments');
+  renderPagination('departments-pagination', depts.length, 'departments');
 }
-
-document.getElementById("refresh-departments")?.addEventListener("click", loadDepartments);
 
 document.getElementById("add-dept-btn")?.addEventListener("click", async () => {
   const nameInput = document.getElementById("dept-name");
-  const msgEl     = document.getElementById("dept-msg");
   const name = nameInput?.value.trim();
-  if (!name) { if (msgEl) msgEl.innerHTML = '<span class="error-msg">Введите название</span>'; return; }
+  if (!name) { showToast("Введите название отдела.", "error"); return; }
   try {
-    await apiRequest("/departments", {
-      method: "POST",
-      body: JSON.stringify({ name }),
-    });
-    if (msgEl) msgEl.innerHTML = '<span class="success-msg">Отдел добавлен</span>';
+    if (_editDeptId) {
+      await apiRequest("/departments/" + _editDeptId, { method: "PATCH", body: JSON.stringify({ name }) });
+      showToast("Отдел «" + name + "» обновлён.", "success");
+    } else {
+      await apiRequest("/departments", { method: "POST", body: JSON.stringify({ name }) });
+      showToast("Отдел «" + name + "» создан.", "success");
+    }
     if (nameInput) nameInput.value = "";
+    _editDeptId = null;
+    closeModal("modal-dept");
     await loadDepartments();
-    setTimeout(() => { if (msgEl) msgEl.innerHTML = ""; }, 3000);
   } catch (e) {
-    if (msgEl) msgEl.innerHTML = '<span class="error-msg">' + e.message + '</span>';
+    showToast("Ошибка: " + e.message, "error");
   }
 });
 

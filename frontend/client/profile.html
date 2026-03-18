@@ -8,6 +8,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <link rel="stylesheet" href="./styles.css">
+  <style>body { background: #f1f5f9; }</style>
 </head>
 <body>
   <header class="app-header">
@@ -31,13 +32,27 @@
     <div class="pf-hero-card">
       <div class="pf-cover"></div>
       <div class="pf-hero-body">
-        <div class="pf-avatar-wrap">
-          <div class="pf-avatar-xl" id="profile-avatar">??</div>
+        <div class="pf-avatar-wrap" id="avatar-upload-trigger" title="Изменить фото">
+          <div class="pf-avatar-xl" id="profile-avatar">
+            <img id="profile-avatar-img" alt="Аватар" style="display:none">
+            <span id="profile-avatar-initials">??</span>
+          </div>
+          <div class="pf-avatar-overlay">
+            <i data-lucide="camera" style="width:18px;height:18px"></i>
+            <span>Изменить</span>
+          </div>
           <span class="pf-avatar-dot" id="avatar-status-dot" style="display:none"></span>
+          <input type="file" id="avatar-file-input" accept="image/*" style="display:none">
         </div>
         <div class="pf-hero-info">
           <h1 class="pf-hero-name" id="profile-name-text">Загрузка...</h1>
           <p class="pf-hero-sub" id="profile-sub">Сотрудник</p>
+          <div id="user-location-block" class="pf-location-block" style="display:none">
+            <span class="pf-location-dot" id="location-dot"></span>
+            <i data-lucide="map-pin" style="width:11px;height:11px;flex-shrink:0"></i>
+            <span id="location-text"></span>
+          </div>
+          <div id="last-visit-hint" class="pf-last-visit" style="display:none"></div>
         </div>
         <!-- Quick status switcher -->
         <div class="pf-status-switcher" id="status-switcher">
@@ -80,7 +95,7 @@
     </div>
 
     <!-- ── Profile info (view / edit) ── -->
-    <div class="card" style="margin-top:16px;overflow:hidden">
+    <div class="card card-secondary" style="margin-top:20px;overflow:hidden">
       <!-- View mode -->
       <div id="profile-view-mode">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)">
@@ -135,7 +150,7 @@
     </div>
 
     <!-- ── My bookings (grouped) ── -->
-    <div class="card" style="margin-top:16px">
+    <div class="card card-primary" id="bookings-card" style="margin-top:16px">
       <div class="card-header">
         <h2 class="card-title">
           <i data-lucide="calendar-clock" style="width:16px;height:16px"></i>
@@ -149,7 +164,7 @@
     </div>
 
     <!-- ── Favorites ── -->
-    <div class="card" style="margin-top:16px">
+    <div class="card card-secondary" style="margin-top:16px">
       <div class="card-header">
         <h2 class="card-title">
           <i data-lucide="star" style="width:16px;height:16px"></i> Избранные места
@@ -159,7 +174,7 @@
     </div>
 
     <!-- ── Team ── -->
-    <div class="card" style="margin-top:16px" id="team-card">
+    <div class="card card-secondary" style="margin-top:16px" id="team-card">
       <div class="card-header">
         <h2 class="card-title">
           <i data-lucide="users" style="width:16px;height:16px"></i> Моя команда
@@ -170,13 +185,17 @@
     </div>
 
     <!-- ── Password change ── -->
-    <div class="card" style="margin-top:16px">
-      <div class="card-header">
+    <div class="card card-secondary" style="margin-top:16px">
+      <div class="card-header" id="pw-card-header" style="cursor:pointer" title="Сменить пароль">
         <h2 class="card-title">
           <i data-lucide="lock" style="width:16px;height:16px"></i> Сменить пароль
         </h2>
+        <button type="button" class="btn btn-secondary btn-sm" id="pw-toggle-btn">
+          <i data-lucide="chevron-down" style="width:14px;height:14px" id="pw-chevron"></i>
+          Изменить
+        </button>
       </div>
-      <form id="password-form" novalidate style="padding:0 20px 20px">
+      <form id="password-form" novalidate style="padding:0 20px 20px;display:none">
         <div class="pf-pw-grid">
           <div class="field">
             <label for="pw-current">Текущий пароль</label>
@@ -243,7 +262,7 @@
   const today = new Date().toISOString().slice(0, 10);
 
   document.getElementById("profile-name-text").textContent = username;
-  document.getElementById("profile-avatar").textContent = username.slice(0, 2).toUpperCase();
+  document.getElementById("profile-avatar-initials").textContent = username.slice(0, 2).toUpperCase();
 
   const STATUS_LABELS  = { available: "Доступен", busy: "Занят", away: "Отсутствует" };
   const STATUS_CLASSES = { available: "status-available", busy: "status-busy", away: "status-away" };
@@ -261,6 +280,89 @@
   const mainAvatar = document.getElementById("profile-avatar");
   const mainColor  = avatarColor(username);
   mainAvatar.style.background = mainColor;
+
+  // ── Avatar display helpers ───────────────────────────────────────────────────
+  function setAvatarImage(url) {
+    const img      = document.getElementById("profile-avatar-img");
+    const initials = document.getElementById("profile-avatar-initials");
+    if (url) {
+      img.src = url;
+      img.style.display = "";
+      initials.style.display = "none";
+      mainAvatar.style.background = "transparent";
+    } else {
+      img.style.display = "none";
+      initials.style.display = "";
+      mainAvatar.style.background = mainColor;
+    }
+  }
+
+  // ── Avatar upload ────────────────────────────────────────────────────────────
+  const _fileInput   = document.getElementById("avatar-file-input");
+  const _uploadWrap  = document.getElementById("avatar-upload-trigger");
+
+  _uploadWrap.addEventListener("click", (e) => {
+    if (e.target === _fileInput) return;
+    _fileInput.click();
+  });
+  _uploadWrap.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    _uploadWrap.classList.add("avatar-dragging");
+  });
+  _uploadWrap.addEventListener("dragleave", () => _uploadWrap.classList.remove("avatar-dragging"));
+  _uploadWrap.addEventListener("drop", (e) => {
+    e.preventDefault();
+    _uploadWrap.classList.remove("avatar-dragging");
+    const file = e.dataTransfer?.files?.[0];
+    if (file && file.type.startsWith("image/")) _processAvatarFile(file);
+  });
+  _fileInput.addEventListener("change", () => {
+    const file = _fileInput.files?.[0];
+    if (file) _processAvatarFile(file);
+    _fileInput.value = "";
+  });
+
+  function _processAvatarFile(file) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => _cropAndUpload(img);
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function _cropAndUpload(srcImg) {
+    const SIZE = 128;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = SIZE;
+    const ctx = canvas.getContext("2d");
+    const s = Math.min(srcImg.naturalWidth, srcImg.naturalHeight);
+    const sx = (srcImg.naturalWidth  - s) / 2;
+    const sy = (srcImg.naturalHeight - s) / 2;
+    ctx.drawImage(srcImg, sx, sy, s, s, 0, 0, SIZE, SIZE);
+    canvas.toBlob(async (blob) => {
+      if (!blob) return;
+      mainAvatar.classList.add("uploading");
+      try {
+        const fd = new FormData();
+        fd.append("file", blob, "avatar.jpg");
+        const r = await fetch(`${API_BASE}/users/me/avatar`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: fd,
+        });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "Ошибка загрузки");
+        const data = await r.json();
+        setAvatarImage(data.avatar_url);
+        if (_profileData) _profileData.avatar_url = data.avatar_url;
+      } catch (err) {
+        alert("Не удалось загрузить аватар: " + err.message);
+      } finally {
+        mainAvatar.classList.remove("uploading");
+      }
+    }, "image/jpeg", 0.92);
+  }
 
   // ── Status dot on main avatar ───────────────────────────────────────────────
   function setAvatarDot(status) {
@@ -383,7 +485,8 @@
 
       const displayName = data.full_name || username;
       document.getElementById("profile-name-text").textContent = displayName;
-      document.getElementById("profile-avatar").textContent = displayName.slice(0, 2).toUpperCase();
+      document.getElementById("profile-avatar-initials").textContent = displayName.slice(0, 2).toUpperCase();
+      setAvatarImage(data.avatar_url || null);
 
       const sub = [data.department, data.position].filter(Boolean).join(" · ") || "Сотрудник";
       document.getElementById("profile-sub").textContent = sub;
@@ -421,7 +524,8 @@
       _profileData = data;
       const displayName = data.full_name || username;
       document.getElementById("profile-name-text").textContent = displayName;
-      document.getElementById("profile-avatar").textContent = displayName.slice(0, 2).toUpperCase();
+      document.getElementById("profile-avatar-initials").textContent = displayName.slice(0, 2).toUpperCase();
+      if (data.avatar_url) setAvatarImage(data.avatar_url);
       const sub = [data.department, data.position].filter(Boolean).join(" · ") || "Сотрудник";
       document.getElementById("profile-sub").textContent = sub;
       renderInfoView(data);
@@ -613,6 +717,25 @@
   }
   document.getElementById("password-form").addEventListener("submit", changePassword);
 
+  // ── Password accordion ───────────────────────────────────────────────────────
+  (function() {
+    const form    = document.getElementById("password-form");
+    const chevron = document.getElementById("pw-chevron");
+    let open = false;
+    function toggle() {
+      open = !open;
+      form.style.display = open ? "" : "none";
+      chevron.setAttribute("data-lucide", open ? "chevron-up" : "chevron-down");
+      if (window.lucide) lucide.createIcons({ nodes: [chevron.parentElement] });
+      if (!open) {
+        document.getElementById("password-form").reset();
+        document.getElementById("pw-strength").style.display = "none";
+        document.getElementById("password-form-msg").innerHTML = "";
+      }
+    }
+    document.getElementById("pw-card-header").addEventListener("click", toggle);
+  })();
+
   // ── Favorites ───────────────────────────────────────────────────────────────
   const FAV_ICONS = { desk: "monitor", meeting_room: "users", call_room: "phone-call", open_space: "layout", lounge: "coffee" };
   const FAV_LABELS = { desk: "Рабочий стол", meeting_room: "Переговорная", call_room: "Call-room", open_space: "Open Space", lounge: "Лаунж" };
@@ -665,7 +788,7 @@
     }
   }
 
-  // ── Team (2-col grid, colored avatars) ──────────────────────────────────────
+  // ── Team (list with location) ────────────────────────────────────────────────
   async function loadTeam() {
     const container = document.getElementById("team-list");
     const deptLabel = document.getElementById("team-dept-label");
@@ -687,23 +810,54 @@
       for (const m of members) {
         const displayName = m.full_name || m.username;
         const initials    = displayName.slice(0, 2).toUpperCase();
-        const sub         = [m.position, m.department].filter(Boolean).join(" · ");
+        const sub         = [m.position].filter(Boolean).join("");
         const color       = avatarColor(m.username);
         const statusColor = STATUS_COLORS[m.user_status] || "#94a3b8";
-        const card        = document.createElement("div");
-        card.className    = "pf-team-card";
-        card.innerHTML    = `
+
+        // Avatar: photo or initials
+        const avatarInner = m.avatar_url
+          ? `<img src="${m.avatar_url}" alt="">`
+          : initials;
+
+        // Location row
+        const loc = m.location;
+        let locationHtml;
+        if (loc) {
+          const parts = [loc.floor_name, loc.desk_label ? `Стол ${loc.desk_label}` : null].filter(Boolean).join(" · ");
+          locationHtml = `
+            <div class="pf-team-location in-office">
+              <i data-lucide="map-pin" style="width:11px;height:11px"></i>
+              <span>В офисе${parts ? ` · ${parts}` : ""}</span>
+            </div>`;
+        } else {
+          locationHtml = `
+            <div class="pf-team-location">
+              <i data-lucide="wifi-off" style="width:11px;height:11px"></i>
+              <span>Не в офисе сегодня</span>
+            </div>`;
+        }
+
+        // Map button only if in office
+        const mapBtn = loc ? `
+          <a href="./index.html?find=${encodeURIComponent(m.username)}"
+             class="btn btn-secondary btn-sm pf-team-map-btn"
+             title="Показать на карте">
+            <i data-lucide="navigation" style="width:12px;height:12px"></i>
+          </a>` : "";
+
+        const card = document.createElement("div");
+        card.className = "pf-team-card";
+        card.innerHTML = `
           <div class="pf-team-avatar-wrap">
-            <div class="pf-team-avatar" style="background:${color}">${initials}</div>
+            <div class="pf-team-avatar" style="background:${color}">${avatarInner}</div>
             <span class="pf-team-status-dot" style="background:${statusColor}" title="${STATUS_LABELS[m.user_status] || ''}"></span>
           </div>
           <div class="pf-team-info">
             <strong>${displayName}</strong>
-            ${sub ? `<span>${sub}</span>` : ""}
+            ${sub ? `<span class="pf-team-sub">${sub}</span>` : ""}
+            ${locationHtml}
           </div>
-          <a href="./index.html?find=${encodeURIComponent(m.username)}" class="btn btn-secondary btn-sm pf-team-find">
-            <i data-lucide="map-pin" style="width:12px;height:12px"></i> Найти
-          </a>`;
+          ${mapBtn}`;
         grid.append(card);
       }
       container.innerHTML = "";
@@ -712,6 +866,44 @@
     } catch (e) {
       container.innerHTML = `<p class="empty" style="padding:16px">Ошибка загрузки команды</p>`;
     }
+  }
+
+  // ── Location status block ────────────────────────────────────────────────────
+  async function loadLocationBlock() {
+    try {
+      const loc = await apiFetch("/users/me/location");
+      const block    = document.getElementById("user-location-block");
+      const dot      = document.getElementById("location-dot");
+      const text     = document.getElementById("location-text");
+      const lastHint = document.getElementById("last-visit-hint");
+
+      if (loc.in_office_today && loc.location) {
+        const l = loc.location;
+        const parts = [l.floor_name, l.desk_label ? `Стол ${l.desk_label}` : null].filter(Boolean).join(" · ");
+        dot.style.background = "#16a34a";
+        text.textContent = "В офисе" + (parts ? ` · ${parts}` : "");
+        block.classList.add("in-office");
+      } else {
+        dot.style.background = "#94a3b8";
+        text.textContent = "Не в офисе сегодня";
+        block.classList.remove("in-office");
+      }
+      block.style.display = "flex";
+      if (window.lucide) lucide.createIcons({ nodes: [block] });
+
+      // Last visit hint
+      if (!loc.in_office_today && loc.last_office_date) {
+        const d       = new Date(loc.last_office_date + "T00:00:00");
+        const todayD  = new Date(today + "T00:00:00");
+        const diffDay = Math.round((todayD - d) / 86400000);
+        let when;
+        if (diffDay === 1)       when = "вчера";
+        else if (diffDay <= 6)   when = d.toLocaleDateString("ru-RU", { weekday: "long" });
+        else                     when = d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+        lastHint.textContent = `Последний раз в офисе: ${when}`;
+        lastHint.style.display = "";
+      }
+    } catch { /* non-critical */ }
   }
 
   document.getElementById("refresh-btn").addEventListener("click", loadBookings);
@@ -725,6 +917,7 @@
   loadBookings();
   loadFavoriteDesks();
   loadTeam();
+  loadLocationBlock();
   </script>
   <script>if (window.lucide) lucide.createIcons();</script>
 </body>
