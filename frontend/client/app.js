@@ -627,6 +627,14 @@ async function loadDesks(floorId) {
   try {
     state.desks = await apiRequest(`/desks?floor_id=${floorId}`);
     await refreshAvailability();
+    // Save and restore pending navigation state so an intermediate re-render
+    // (with the old floor's layout) does not prematurely consume it.
+    const _savedPendingId     = _pendingFocusDeskId;
+    const _savedPendingArrow  = _pendingFocusWithArrow;
+    const _savedPendingPlumbob = _pendingPlumbobUsername;
+    _pendingFocusDeskId = null;
+    _pendingFocusWithArrow = false;
+    _pendingPlumbobUsername = null;
     if (_currentLayout) {
       const imageFrame = document.getElementById("map-image-frame");
       _renderInlineLayoutFloor(_currentLayout, imageFrame);
@@ -634,6 +642,9 @@ async function loadDesks(floorId) {
       const imageFrame = document.getElementById("map-image-frame");
       _renderInlineSVGFloor(_currentRevision, imageFrame);
     }
+    _pendingFocusDeskId     = _savedPendingId;
+    _pendingFocusWithArrow  = _savedPendingArrow;
+    _pendingPlumbobUsername = _savedPendingPlumbob;
   } catch (e) {
     addMessage(`Места: ${e.message}`, "error");
   }
@@ -828,6 +839,7 @@ let _fitMode = localStorage.getItem(LS_KEYS.fitMode) === "height" ? "height" : "
 // Pending desk to focus after floor plan loads (used by navigateToDesk)
 let _pendingFocusDeskId = null;
 let _pendingFocusWithArrow = false;
+let _pendingPlumbobUsername = null; // show plumbob for this user after navigation
 // Active controller for inline SVG zoom (layout/published SVG modes)
 let _inlineZoomController = null;
 
@@ -847,6 +859,7 @@ function _applyTransform() {
   }
   const ind = document.getElementById("zoom-indicator");
   if (ind) ind.textContent = Math.round(_zoom * 100) + "%";
+  if (_plumbobReposition) requestAnimationFrame(_plumbobReposition);
 }
 
 function updateFitButtonsUI() {
@@ -1147,10 +1160,13 @@ function fitFloorPlan() {
   if (_pendingFocusDeskId) {
     const deskId = _pendingFocusDeskId;
     const withArrow = _pendingFocusWithArrow;
+    const plumbobUser = _pendingPlumbobUsername;
     _pendingFocusDeskId = null;
     _pendingFocusWithArrow = false;
+    _pendingPlumbobUsername = null;
     setTimeout(() => {
       focusDeskOnMap(deskId, { withArrow });
+      if (plumbobUser) showColleaguePlumbob(deskId, plumbobUser);
     }, 50);
   }
 }
@@ -1491,10 +1507,24 @@ function _renderInlineLayoutFloor(layout, imageFrame) {
   }).join("");
 
   const doors = (layout.doors || []).map(el => {
-    const pts = (el.pts || []).map(p => `${p[0]},${p[1]}`).join(" ");
+    let pts;
+    if (Number.isFinite(el.cx) && Number.isFinite(el.cy) && Number.isFinite(el.angle)) {
+      // New-style door: compute endpoints from center + angle + width
+      const half = (el.width || 50) / 2;
+      const a = el.angle;
+      const x1 = el.cx - Math.cos(a) * half, y1 = el.cy - Math.sin(a) * half;
+      const x2 = el.cx + Math.cos(a) * half, y2 = el.cy + Math.sin(a) * half;
+      pts = `${x1},${y1} ${x2},${y2}`;
+    } else {
+      pts = (el.pts || []).map(p => `${p[0]},${p[1]}`).join(" ");
+    }
     if (!pts) return "";
-    const strokeW = _layoutStrokeWidth("door", el.thick, strokeScaleVb);
-    return `<polyline points="${pts}" fill="none" stroke="${UI_PALETTE.door}" stroke-width="${strokeW}" stroke-linecap="butt" stroke-linejoin="round"/>`;
+    // Render as wall gap: white eraser line + colored door line on top
+    const wallW = _layoutStrokeWidth("wall", el.thick, strokeScaleVb);
+    const doorW = _layoutStrokeWidth("door", el.thick, strokeScaleVb);
+    const gap = `<polyline points="${pts}" fill="none" stroke="#f6f8fb" stroke-width="${wallW * 1.6}" stroke-linecap="butt"/>`;
+    const door = `<polyline points="${pts}" fill="none" stroke="#c2410c" stroke-width="${doorW * 0.55}" stroke-linecap="round" stroke-linejoin="round"/>`;
+    return gap + door;
   }).join("");
 
   const layoutDesks = Array.isArray(layout.desks) ? layout.desks : [];
@@ -1509,6 +1539,11 @@ function _renderInlineLayoutFloor(layout, imageFrame) {
         h: Math.max(1, Number(d.h || 0.05) * vh),
       }));
 
+  // Build label→DB-desk lookup so layout UUID ids resolve to DB integer ids.
+  // Layout desks use crypto.randomUUID() as id; DB desks use integer ids.
+  // _findMarkerElByDeskId (and all highlight/plumbob logic) uses the DB integer id.
+  const _labelToDbDesk = new Map((state.desks || []).map(sd => [sd.label, sd]));
+
   const deskRects = deskSource.map(d => {
     const x = Number(d.x || 0), y = Number(d.y || 0);
     const w = Math.max(1, Number(d.w || 30)), h = Math.max(1, Number(d.h || 20));
@@ -1519,8 +1554,10 @@ function _renderInlineLayoutFloor(layout, imageFrame) {
       ? ` transform="rotate(${rotation} ${cx} ${cy})"`
       : "";
     const label = _escSvgText(d.label || "");
-    const id = _escAttr(d.id || d.label || "");
-    const visual = _deskVisualState(String(d.id || ""), d.label || "");
+    // Resolve layout UUID → DB integer id via label match so marker lookup works
+    const dbDesk = layoutDesks.length ? _labelToDbDesk.get(d.label) : null;
+    const id = _escAttr(dbDesk ? dbDesk.id : (d.id || d.label || ""));
+    const visual = _deskVisualState(dbDesk ? String(dbDesk.id) : String(d.id || ""), d.label || "");
     const resolvedSpaceType =
       d.space_type ||
       state.desks.find((sd) => String(sd.id) === String(d.id || ""))?.space_type ||
@@ -1594,10 +1631,13 @@ function _renderInlineLayoutFloor(layout, imageFrame) {
   if (_pendingFocusDeskId) {
     const deskId = _pendingFocusDeskId;
     const withArrow = _pendingFocusWithArrow;
+    const plumbobUser = _pendingPlumbobUsername;
     _pendingFocusDeskId = null;
     _pendingFocusWithArrow = false;
+    _pendingPlumbobUsername = null;
     setTimeout(() => {
       focusDeskOnMap(deskId, { withArrow });
+      if (plumbobUser) showColleaguePlumbob(deskId, plumbobUser);
     }, 50);
   }
 }
@@ -1713,10 +1753,13 @@ function _renderInlineSVGFloor(rev, imageFrame) {
   if (_pendingFocusDeskId) {
     const deskId = _pendingFocusDeskId;
     const withArrow = _pendingFocusWithArrow;
+    const plumbobUser = _pendingPlumbobUsername;
     _pendingFocusDeskId = null;
     _pendingFocusWithArrow = false;
+    _pendingPlumbobUsername = null;
     setTimeout(() => {
       focusDeskOnMap(deskId, { withArrow });
+      if (plumbobUser) showColleaguePlumbob(deskId, plumbobUser);
     }, 50);
   }
 }
@@ -1824,6 +1867,7 @@ function _initInlineSvgZoomPan(svg, origX, origY, origW, origH) {
     svg.setAttribute("viewBox", `${vx} ${vy} ${vw} ${vh}`);
     const ind = document.getElementById("zoom-indicator");
     if (ind) ind.textContent = `${Math.round((origW / Math.max(vw, 1e-6)) * 100)}%`;
+    if (_plumbobReposition) requestAnimationFrame(_plumbobReposition);
   }
 
   function zoomBy(scale, clientX, clientY) {
@@ -2334,6 +2378,36 @@ function renderProfileModal(profile, username) {
       </div>` : ""}
     </div>`;
 
+  // "Find on map" button — only for other users
+  if (username !== _username) {
+    const findBtn = document.createElement("button");
+    findBtn.className = "profile-find-btn";
+    findBtn.innerHTML = `<i data-lucide="map-pin" style="width:14px;height:14px"></i> Найти на карте`;
+    findBtn.addEventListener("click", async () => {
+      findBtn.disabled = true;
+      findBtn.textContent = "Поиск…";
+      try {
+        const today = _isoLocalDate(new Date());
+        const results = await apiRequest(`/users/search?q=${encodeURIComponent(username)}&date=${today}&limit=5`);
+        const user = results.find(u => u.username === username) || null;
+        if (user?.location) {
+          const loc = user.location;
+          closeProfileModal();
+          await navigateToDesk(loc.office_id, loc.floor_id, loc.desk_id, { plumbobUsername: username });
+        } else {
+          addMessage(`У ${displayName} нет брони на сегодня`, "info");
+          findBtn.disabled = false;
+          findBtn.innerHTML = `<i data-lucide="map-pin" style="width:14px;height:14px"></i> Найти на карте`;
+          if (window.lucide) lucide.createIcons({ nodes: [findBtn] });
+        }
+      } catch {
+        findBtn.disabled = false;
+        findBtn.textContent = "Найти на карте";
+      }
+    });
+    container.querySelector(".profile-modal-body")?.appendChild(findBtn);
+  }
+
   if (window.lucide) lucide.createIcons({ nodes: [container] });
   container.querySelector("#profile-modal-close")?.addEventListener("click", closeProfileModal);
 }
@@ -2363,6 +2437,126 @@ function closeProfileModal() {
 
 let _highlightedDeskId = null;
 let _searchArrowDeskId = null;
+let _plumbobDeskId = null;
+let _plumbobReposition = null;
+
+function clearColleaguePlumbob() {
+  document.querySelectorAll(".colleague-plumbob").forEach(el => el.remove());
+  document.querySelectorAll(".colleague-plumbob-svg").forEach(el => el.remove());
+  _plumbobDeskId = null;
+  _plumbobReposition = null;
+}
+
+function showColleaguePlumbob(deskId, username) {
+  clearColleaguePlumbob();
+  if (!deskId) return;
+
+  const marker = _findMarkerElByDeskId(deskId);
+  if (!marker) return;
+
+  _plumbobDeskId = deskId;
+  _plumbobReposition = null;
+
+  const parentSvg = marker.ownerSVGElement;
+  if (parentSvg) {
+    // SVG-embedded approach: sits in SVG coordinate space, no overflow clipping issues
+    let box;
+    try { box = marker.getBBox(); } catch { box = null; }
+    if (!box || !Number.isFinite(box.x)) return;
+
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+
+    const vbParts = parentSvg.getAttribute("viewBox")?.trim().split(/[\s,]+/).map(Number) || [0, 0, 1000, 1000];
+    const vw = vbParts[2] || 1000;
+    const baseR = Math.max(vw * 0.025, box.width * 0.75);
+    const sw    = vw * 0.005;
+    const fontSize = vw * 0.028;
+    const labelY = box.y - baseR * 0.5;
+
+    const ns = "http://www.w3.org/2000/svg";
+    const g = document.createElementNS(ns, "g");
+    g.classList.add("colleague-plumbob-svg");
+    g.setAttribute("data-desk-id", String(deskId));
+
+    // Outer pulsing ring
+    const pulse = document.createElementNS(ns, "circle");
+    pulse.setAttribute("cx", cx);
+    pulse.setAttribute("cy", cy);
+    pulse.setAttribute("r", baseR);
+    pulse.setAttribute("fill", "none");
+    pulse.setAttribute("stroke", "#22c55e");
+    pulse.setAttribute("stroke-width", sw);
+    pulse.classList.add("colleague-pulse-ring");
+
+    // Inner solid dot
+    const dot = document.createElementNS(ns, "circle");
+    dot.setAttribute("cx", cx);
+    dot.setAttribute("cy", cy);
+    dot.setAttribute("r", baseR * 0.4);
+    dot.setAttribute("fill", "#16a34a");
+    dot.setAttribute("stroke", "#fff");
+    dot.setAttribute("stroke-width", sw * 0.6);
+
+    // Name label
+    const displayName = username.length > 18 ? username.slice(0, 17) + "…" : username;
+    const charW = fontSize * 0.6;
+    const bgW   = displayName.length * charW + fontSize * 0.8;
+    const bgH   = fontSize * 1.5;
+
+    const bgRect = document.createElementNS(ns, "rect");
+    bgRect.setAttribute("x", cx - bgW / 2);
+    bgRect.setAttribute("y", labelY - bgH);
+    bgRect.setAttribute("width", bgW);
+    bgRect.setAttribute("height", bgH);
+    bgRect.setAttribute("rx", fontSize * 0.3);
+    bgRect.setAttribute("fill", "white");
+    bgRect.setAttribute("fill-opacity", "0.93");
+    bgRect.setAttribute("stroke", "#16a34a");
+    bgRect.setAttribute("stroke-width", sw * 0.8);
+
+    const textEl = document.createElementNS(ns, "text");
+    textEl.setAttribute("x", cx);
+    textEl.setAttribute("y", labelY - bgH * 0.25);
+    textEl.setAttribute("text-anchor", "middle");
+    textEl.setAttribute("dominant-baseline", "middle");
+    textEl.setAttribute("font-size", fontSize);
+    textEl.setAttribute("font-weight", "700");
+    textEl.setAttribute("fill", "#14532d");
+    textEl.setAttribute("pointer-events", "none");
+    textEl.textContent = displayName;
+
+    g.appendChild(bgRect);
+    g.appendChild(pulse);
+    g.appendChild(dot);
+    g.appendChild(textEl);
+
+    const container = parentSvg.querySelector("#if-markers") || parentSvg;
+    container.appendChild(g);
+    return;
+  }
+
+  // HTML overlay fallback (PNG maps without inline SVG)
+  const el = document.createElement("div");
+  el.className = "colleague-plumbob";
+  el.setAttribute("data-desk-id", String(deskId));
+  const displayName = username.length > 16 ? username.slice(0, 15) + "…" : username;
+  el.innerHTML = `
+    <div class="plumbob-name">${displayName}</div>
+    <div class="plumbob-gem"></div>
+    <div class="plumbob-connector"></div>`;
+  mapZoomWrapper.appendChild(el);
+
+  function reposition() {
+    const wRect = mapZoomWrapper.getBoundingClientRect();
+    const mRect = marker.getBoundingClientRect();
+    if (!mRect.width && !mRect.height) return;
+    el.style.left = (mRect.left + mRect.width / 2 - wRect.left) + "px";
+    el.style.top  = (mRect.top - wRect.top) + "px";
+  }
+  requestAnimationFrame(() => setTimeout(reposition, 80));
+  _plumbobReposition = reposition;
+}
 
 function clearDeskSearchArrow() {
   document.querySelectorAll(".desk-search-arrow").forEach((el) => el.remove());
@@ -2429,6 +2623,9 @@ function highlightDesk(deskId) {
   if (!deskId || (_searchArrowDeskId && String(_searchArrowDeskId) !== String(deskId))) {
     clearDeskSearchArrow();
   }
+  if (!deskId || (_plumbobDeskId && String(_plumbobDeskId) !== String(deskId))) {
+    clearColleaguePlumbob();
+  }
   deskSvgOverlay?.querySelectorAll(".desk-tile.highlighted")
     .forEach(m => m.classList.remove("highlighted"));
   document.querySelectorAll("#inline-floor-svg .desk-tile.highlighted")
@@ -2458,13 +2655,13 @@ function focusDeskOnMap(deskId, opts = {}) {
   if (markerEl && deskObj) showSidePanel(markerEl, deskObj);
 }
 
-function centerOnMarker(deskId) {
+function centerOnMarker(deskId, zoom = 2.25) {
   if (_inlineZoomController) {
     const marker = document.querySelector(`#inline-floor-svg [data-desk-id="${deskId}"]`);
     if (!marker || typeof marker.getBBox !== "function") return;
     const box = marker.getBBox();
     if (!Number.isFinite(box.x) || !Number.isFinite(box.y)) return;
-    _inlineZoomController.centerOn(box.x + box.width / 2, box.y + box.height / 2, 2.25);
+    _inlineZoomController.centerOn(box.x + box.width / 2, box.y + box.height / 2, zoom);
     return;
   }
 
@@ -2499,6 +2696,7 @@ const _TILE_FILL = {
 function renderPlanMarkers(svgEl, desks) {
   if (!svgEl) return;
   _highlightedDeskId = null;
+  clearColleaguePlumbob();
   svgEl.innerHTML = "";
 
   desks
@@ -2741,9 +2939,11 @@ function renderColleagues() {
 
     const initials  = r.user_id.slice(0, 2).toUpperCase();
     const deskLabel = desk?.label ?? `Место #${r.desk_id}`;
-    const time      = `${r.start_time?.slice(0, 5) ?? "?"} – ${r.end_time?.slice(0, 5) ?? "?"}`;
-    const meTag     = isMe ? `<span class="colleague-me-tag">вы</span>` : "";
-    const teamTag   = !isMe && isTeam ? `<span class="colleague-team-tag">команда</span>` : "";
+    const timeText  = (r.start_time && r.end_time)
+      ? `${r.start_time.slice(0, 5)} – ${r.end_time.slice(0, 5)}`
+      : "Весь день";
+    const meTag   = isMe ? `<span class="colleague-me-tag">вы</span>` : "";
+    const teamTag = !isMe && isTeam ? `<span class="colleague-team-tag">команда</span>` : "";
 
     item.innerHTML = `
       <div class="colleague-avatar">${initials}</div>
@@ -2751,14 +2951,22 @@ function renderColleagues() {
         <div class="colleague-name">${r.user_id}${meTag}${teamTag}</div>
         <div class="colleague-desk">${deskLabel}</div>
       </div>
-      <div class="colleague-time">${time}</div>`;
+      <div class="colleague-time">${timeText}</div>
+      ${!isMe ? `<button class="colleague-profile-btn" data-uid="${r.user_id}" title="Профиль" aria-label="Открыть профиль">👤</button>` : ""}`;
+
+    // Profile button
+    item.querySelector(".colleague-profile-btn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openProfileModal(e.currentTarget.dataset.uid);
+    });
 
     if (desk) {
       item.style.cursor = "pointer";
-      (function(reservation, listItem) {
+      (function(reservation, listItem, userId) {
         listItem.addEventListener("click", () => {
           if (_highlightedDeskId === reservation.desk_id) {
             highlightDesk(null);
+            clearColleaguePlumbob();
             closeSidePanel();
             listItem.classList.remove("active-colleague");
             return;
@@ -2768,11 +2976,12 @@ function renderColleagues() {
           listItem.classList.add("active-colleague");
           highlightDesk(reservation.desk_id);
           centerOnMarker(reservation.desk_id);
+          showColleaguePlumbob(reservation.desk_id, userId);
           const markerEl = _findMarkerElByDeskId(reservation.desk_id);
           const deskObj  = state.desks.find(d => d.id === reservation.desk_id);
           if (markerEl && deskObj) showSidePanel(markerEl, deskObj);
         });
-      })(r, item);
+      })(r, item, r.user_id);
     }
 
     col.append(item);
@@ -3121,9 +3330,12 @@ document.querySelectorAll(".panel-tab-btn").forEach(btn => {
 // ── Navigate to desk (cross-floor / cross-office) ────────────────────────────
 
 async function navigateToDesk(officeId, floorId, deskId, opts = {}) {
-  const { showArrow = false } = opts;
-  _pendingFocusDeskId = deskId;
-  _pendingFocusWithArrow = !!showArrow;
+  const { showArrow = false, plumbobUsername = null } = opts;
+
+  // Clear stale pending state so intermediate re-renders don't consume it
+  _pendingFocusDeskId = null;
+  _pendingFocusWithArrow = false;
+  _pendingPlumbobUsername = null;
 
   // Switch office if needed
   if (String(officeSelect.value) !== String(officeId)) {
@@ -3134,23 +3346,36 @@ async function navigateToDesk(officeId, floorId, deskId, opts = {}) {
   }
 
   // Switch floor if needed
+  let floorChanged = false;
   if (String(floorSelect.value) !== String(floorId)) {
     floorSelect.value = String(floorId);
     localStorage.setItem("dk_floor", String(floorId));
     state.desks = [];
     await loadDesks(floorId);
     const floor = state.floors.find(f => String(f.id) === String(floorId));
-    renderFloorPlan(floor);
-    // fitFloorPlan fires on image onload → picks up _pendingFocusDeskId
-  } else {
-    // Already on correct floor — focus immediately after markers render
-    _pendingFocusDeskId = null;
-    const withArrow = _pendingFocusWithArrow;
-    _pendingFocusWithArrow = false;
-    setTimeout(() => {
-      focusDeskOnMap(deskId, { withArrow });
-    }, 50);
+    await renderFloorPlan(floor);
+    floorChanged = true;
   }
+
+  // PNG path: renderFloorPlan returns before image onload — delegate to fitFloorPlan
+  if (floorChanged && !_currentLayout && !_currentRevision) {
+    _pendingFocusDeskId = deskId;
+    _pendingFocusWithArrow = showArrow;
+    _pendingPlumbobUsername = plumbobUsername;
+    return;
+  }
+
+  // Inline SVG / layout path, or same floor: rendering is complete, act directly
+  setTimeout(() => {
+    centerOnMarker(deskId, 4.0);
+    highlightDesk(deskId);
+    clearDeskSearchArrow();
+    if (showArrow) showDeskSearchArrow(deskId);
+    if (plumbobUsername) showColleaguePlumbob(deskId, plumbobUsername);
+    const markerEl = _findMarkerElByDeskId(deskId);
+    const deskObj  = state.desks.find(d => d.id === deskId);
+    if (markerEl && deskObj) showSidePanel(markerEl, deskObj);
+  }, 150);
 }
 
 // ── Colleague search ─────────────────────────────────────────────────────────
@@ -3371,7 +3596,7 @@ async function init() {
       const user = results.find(u => u.username === findParam) || results[0];
       if (user?.location) {
         const loc = user.location;
-        navigateToDesk(loc.office_id, loc.floor_id, loc.desk_id, { showArrow: true });
+        navigateToDesk(loc.office_id, loc.floor_id, loc.desk_id, { showArrow: false, plumbobUsername: user.username || findParam });
       } else if (user) {
         addMessage(`У ${user.full_name || findParam} нет брони на выбранный день`, "info");
       }

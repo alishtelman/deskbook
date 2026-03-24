@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeskBook — Платформа управления гибридным офисом</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;0,14..32,800;0,14..32,900&display=swap" rel="stylesheet">
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+          colors: {
+            brand: {
+              50: '#eefbf8', 100: '#d5f5ef', 200: '#aeebe0', 300: '#78d9ca',
+              400: '#42bfaa', 500: '#26a391', 600: '#1d8375', 700: '#1a6b60',
+              800: '#19554e', 900: '#194742', 950: '#092c2a',
+            }
+          },
+        }
+      }
+    }
+  </script>
+
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { font-family: 'Inter', sans-serif; background: #ffffff; color: #0f172a; -webkit-font-smoothing: antialiased; }
+
+    /* Scroll reveal — only animates when JS is ready; content always visible without JS */
+    .js-ready .reveal { opacity: 0; transform: translateY(24px); transition: opacity 0.6s cubic-bezier(.22,1,.36,1), transform 0.6s cubic-bezier(.22,1,.36,1); }
+    .js-ready .reveal.in { opacity: 1; transform: none; }
+    .js-ready .reveal-l { opacity: 0; transform: translateX(-24px); transition: opacity 0.6s cubic-bezier(.22,1,.36,1), transform 0.6s cubic-bezier(.22,1,.36,1); }
+    .js-ready .reveal-l.in { opacity: 1; transform: none; }
+    .js-ready .reveal-r { opacity: 0; transform: translateX(24px); transition: opacity 0.6s cubic-bezier(.22,1,.36,1), transform 0.6s cubic-bezier(.22,1,.36,1); }
+    .js-ready .reveal-r.in { opacity: 1; transform: none; }
+    .d1 { transition-delay: .08s; } .d2 { transition-delay: .16s; } .d3 { transition-delay: .24s; }
+
+    /* Header */
+    header { transition: background .25s, box-shadow .25s; }
+    header { background: rgba(255,255,255,.92); backdrop-filter: blur(12px); box-shadow: 0 1px 0 #e2e8f0; }
+    header.scrolled { background: rgba(255,255,255,.98) !important; box-shadow: 0 1px 0 #e2e8f0; }
+
+    /* Gradient text */
+    .gt { background: linear-gradient(135deg, #1d8375 0%, #0891b2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+
+    /* Primary button */
+    .btn { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; border-radius: 12px; transition: all .2s ease; }
+    .btn-dark { background: #0f172a; color: #fff; padding: 14px 28px; font-size: 15px; }
+    .btn-dark:hover { background: #1e293b; transform: translateY(-1px); box-shadow: 0 8px 28px rgba(15,23,42,.18); }
+    .btn-outline { border: 1.5px solid #e2e8f0; color: #334155; padding: 13px 24px; font-size: 15px; }
+    .btn-outline:hover { border-color: #1d8375; color: #1d8375; }
+    .btn-brand { background: linear-gradient(135deg, #1d8375, #0891b2); color: #fff; padding: 15px 32px; font-size: 16px; box-shadow: 0 4px 20px rgba(29,131,117,.3); }
+    .btn-brand:hover { transform: translateY(-1px); box-shadow: 0 8px 32px rgba(29,131,117,.4); }
+
+    /* Card */
+    .card { background: #fff; border: 1px solid #e8edf2; border-radius: 20px; transition: border-color .2s, box-shadow .2s; }
+    .card:hover { border-color: #aeebe0; box-shadow: 0 12px 40px rgba(29,131,117,.08); }
+
+    /* Before/After */
+    .ba-before { background: #fef2f2; border: 1px solid #fecaca; }
+    .ba-after  { background: #f0fdf4; border: 1px solid #bbf7d0; }
+
+    /* Metric */
+    .metric { border-radius: 20px; padding: 28px 24px; }
+
+    /* Mobile menu */
+    #mm { max-height: 0; opacity: 0; overflow: hidden; transition: max-height .3s ease, opacity .3s ease; }
+    #mm.open { max-height: 320px; opacity: 1; }
+
+    /* FAQ */
+    details summary { list-style: none; cursor: pointer; }
+    details summary::-webkit-details-marker { display: none; }
+    .faq-icon { transition: transform .2s; }
+    details[open] .faq-icon { transform: rotate(45deg); }
+    details[open] .faq-body { animation: fd .2s ease; }
+    @keyframes fd { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }
+
+    /* Pulse */
+    @keyframes pulse-green { 0%,100% { opacity:1; } 50% { opacity:.4; } }
+    .pulse { animation: pulse-green 2s ease-in-out infinite; }
+
+    /* Sticky mobile CTA */
+    #mobile-cta { transform: translateY(100%); transition: transform .3s cubic-bezier(.22,1,.36,1); }
+    #mobile-cta.visible { transform: translateY(0); }
+
+    /* Number counter */
+    .big-num { font-size: clamp(40px, 6vw, 68px); font-weight: 900; line-height: 1; }
+
+    /* Real screenshots */
+    .scr-wrap { border-radius: 14px; overflow: hidden; box-shadow: 0 24px 64px rgba(15,23,42,.13), 0 0 0 1px #e2e8f0; }
+    .scr-bar { background: #f1f5f9; border-bottom: 1px solid #e2e8f0; padding: 9px 14px; display: flex; align-items: center; gap: 6px; }
+    .scr-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    .scr-wrap img { display: block; width: 100%; }
+    .scr-hero { border-radius: 16px; overflow: hidden; box-shadow: 0 32px 80px rgba(15,23,42,.16), 0 0 0 1px #dde3ea; }
+    .scr-hero img { display: block; width: 100%; }
+
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+  </style>
+  <script>
+    function toggleMM() {
+      var el = document.getElementById('mm');
+      if (el) el.classList.toggle('open');
+    }
+  </script>
+</head>
+<body>
+
+<!-- ══════════════════ HEADER ══════════════════ -->
+<header id="hdr" class="fixed top-0 inset-x-0 z-50">
+  <div class="max-w-6xl mx-auto px-5 lg:px-8">
+    <div class="flex items-center justify-between h-16">
+
+      <!-- Logo -->
+      <a href="#" class="flex items-center gap-2.5 flex-shrink-0">
+        <div class="w-8 h-8 rounded-[10px] flex items-center justify-center" style="background:linear-gradient(135deg,#1d8375,#0891b2)">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <rect x="1" y="1" width="6" height="6" rx="1.5" fill="white" opacity=".9"/>
+            <rect x="9" y="1" width="6" height="6" rx="1.5" fill="white" opacity=".55"/>
+            <rect x="1" y="9" width="6" height="6" rx="1.5" fill="white" opacity=".55"/>
+            <rect x="9" y="9" width="6" height="6" rx="1.5" fill="white" opacity=".9"/>
+          </svg>
+        </div>
+        <span class="text-[17px] font-bold tracking-tight text-slate-900">DeskBook</span>
+      </a>
+
+      <!-- Nav -->
+      <nav class="hidden lg:flex items-center gap-6">
+        <a href="#product" class="text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors">Продукт</a>
+        <a href="#howworks" class="text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors">Как работает</a>
+        <a href="#roi" class="text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors">Результаты</a>
+        <a href="#pilot" class="text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors">Пилот</a>
+      </nav>
+
+      <div class="hidden lg:flex items-center gap-3">
+        <a href="#pilot" class="btn btn-dark text-sm py-2.5 px-5">Запустить пилот →</a>
+      </div>
+
+      <button id="mb" class="lg:hidden p-2 text-slate-600" onclick="toggleMM()">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <line x1="2" y1="5" x2="18" y2="5"/><line x1="2" y1="10" x2="18" y2="10"/><line x1="2" y1="15" x2="18" y2="15"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Mobile menu -->
+    <div id="mm" class="lg:hidden bg-white border border-slate-100 rounded-2xl mb-3">
+      <div class="px-4 py-4 flex flex-col gap-1">
+        <a href="#product"  class="text-sm font-medium text-slate-700 py-2.5 px-3 rounded-xl hover:bg-slate-50" onclick="toggleMM()">Продукт</a>
+        <a href="#howworks" class="text-sm font-medium text-slate-700 py-2.5 px-3 rounded-xl hover:bg-slate-50" onclick="toggleMM()">Как работает</a>
+        <a href="#roi"      class="text-sm font-medium text-slate-700 py-2.5 px-3 rounded-xl hover:bg-slate-50" onclick="toggleMM()">Результаты</a>
+        <a href="#pilot"    class="text-sm font-medium text-slate-700 py-2.5 px-3 rounded-xl hover:bg-slate-50" onclick="toggleMM()">Пилот</a>
+        <a href="#pilot" class="btn btn-dark mt-2 justify-center text-sm">Запустить пилот →</a>
+      </div>
+    </div>
+  </div>
+</header>
+
+
+<!-- ══════════════════ HERO ══════════════════ -->
+<section class="pt-20 pb-12 lg:pt-36 lg:pb-28 overflow-hidden" style="background: radial-gradient(ellipse 100% 55% at 65% -5%, #aeebe040 0%, transparent 60%), radial-gradient(ellipse 70% 45% at 5% 95%, #bae6fd20 0%, transparent 55%), #fafafa;">
+  <div class="max-w-6xl mx-auto px-5 lg:px-8">
+    <div class="grid lg:grid-cols-[1fr_1.1fr] gap-14 items-center">
+
+      <!-- Copy -->
+      <div>
+        <div class="reveal inline-flex items-center gap-2 bg-brand-50 border border-brand-200 rounded-full px-3.5 py-1.5 mb-7">
+          <span class="w-1.5 h-1.5 rounded-full bg-brand-500 pulse"></span>
+          <span class="text-xs font-semibold text-brand-700">Для компаний от 50 сотрудников · Казахстан</span>
+        </div>
+
+        <h1 class="reveal d1 text-[34px] lg:text-[58px] font-black text-slate-900 leading-[1.06] tracking-tight mb-5">
+          Гибридный офис,<br>
+          <span class="gt">который работает</span><br>
+          на вас.
+        </h1>
+
+        <p class="reveal d2 text-[15px] lg:text-[17px] text-slate-500 leading-relaxed mb-9 max-w-lg">
+          Бронирование мест, карта офиса, поиск коллег и HR-аналитика — в одном инструменте. Запуск за 3 дня.
+        </p>
+
+        <div class="reveal d3 flex flex-col sm:flex-row gap-3 mb-10">
+          <a href="#pilot" class="btn btn-brand">Запустить пилот бесплатно</a>
+          <a href="#product" class="btn btn-outline">Посмотреть продукт</a>
+        </div>
+
+        <!-- Trust strip: 3 items, no company names -->
+        <div class="reveal flex flex-wrap gap-6">
+          <span class="flex items-center gap-2 text-sm text-slate-500">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1d8375" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+            </svg>
+            Запуск за 3 дня
+          </span>
+          <span class="flex items-center gap-2 text-sm text-slate-500">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1d8375" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+            Без интеграций
+          </span>
+          <span class="flex items-center gap-2 text-sm text-slate-500">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1d8375" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><path d="M12 22V7M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7zM12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/>
+            </svg>
+            Пилот бесплатно
+          </span>
+        </div>
+      </div>
+
+      <!-- Hero: real floor map screenshot -->
+      <div class="reveal-r">
+        <div class="scr-hero">
+          <div class="scr-bar">
+            <div class="scr-dot" style="background:#fc5f57"></div>
+            <div class="scr-dot" style="background:#fdbc2c"></div>
+            <div class="scr-dot" style="background:#27c840"></div>
+            <div style="flex:1;margin-left:8px;background:#e2e8f0;border-radius:4px;height:16px;display:flex;align-items:center;padding:0 10px;">
+              <span style="font-size:10px;color:#94a3b8;font-family:Inter,sans-serif;">app.deskbook.kz</span>
+            </div>
+          </div>
+          <img src="screenshots/screen-map.png" alt="Интерактивная карта офиса DeskBook" loading="eager">
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════ PROBLEM + BEFORE/AFTER ══════════════════ -->
+<section class="py-12 lg:py-20 bg-white">
+  <div class="max-w-5xl mx-auto px-5 lg:px-8">
+    <div class="reveal text-center mb-12">
+      <p class="text-sm font-semibold text-red-500 uppercase tracking-widest mb-3">Узнаёте себя?</p>
+      <h2 class="text-[32px] lg:text-[44px] font-black text-slate-900 leading-[1.1] tracking-tight">
+        Гибридный офис без системы —<br class="hidden lg:block"> это потеря денег и времени
+      </h2>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-5">
+      <!-- Before -->
+      <div class="reveal d1 ba-before rounded-2xl p-7">
+        <div class="flex items-center gap-2 mb-6">
+          <div class="w-7 h-7 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round"><path d="M2 2l10 10M12 2L2 12"/></svg>
+          </div>
+          <span class="font-bold text-red-700 text-sm uppercase tracking-wide">Сейчас</span>
+        </div>
+        <ul class="space-y-4">
+          <li class="flex items-center gap-3">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" class="flex-shrink-0"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            <span class="text-[14px] text-slate-700">"Кто занял мой стол?" — каждое утро</span>
+          </li>
+          <li class="flex items-center gap-3">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" class="flex-shrink-0"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            <span class="text-[14px] text-slate-700">Двойные брони → конфликты → разборки</span>
+          </li>
+          <li class="flex items-center gap-3">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" class="flex-shrink-0"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            <span class="text-[14px] text-slate-700">Загрузка офиса — ощущения, не цифры</span>
+          </li>
+          <li class="flex items-center gap-3">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" class="flex-shrink-0"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            <span class="text-[14px] text-slate-700">2–3 часа HR на ручные согласования в день</span>
+          </li>
+          <li class="flex items-center gap-3">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" class="flex-shrink-0"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            <span class="text-[14px] text-slate-700">В пиковый день половина команды без места</span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- After -->
+      <div class="reveal d2 ba-after rounded-2xl p-7">
+        <div class="flex items-center gap-2 mb-6">
+          <div class="w-7 h-7 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 7l3.5 3.5L12 3"/></svg>
+          </div>
+          <span class="font-bold text-green-700 text-sm uppercase tracking-wide">С DeskBook</span>
+        </div>
+        <ul class="space-y-4">
+          <li class="flex items-center gap-3">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="flex-shrink-0"><polyline points="20 6 9 17 4 12"/></svg>
+            <span class="text-[14px] text-slate-700">Место на карте — выбрал, забронировал, готово</span>
+          </li>
+          <li class="flex items-center gap-3">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="flex-shrink-0"><polyline points="20 6 9 17 4 12"/></svg>
+            <span class="text-[14px] text-slate-700">Двойное бронирование невозможно физически</span>
+          </li>
+          <li class="flex items-center gap-3">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="flex-shrink-0"><polyline points="20 6 9 17 4 12"/></svg>
+            <span class="text-[14px] text-slate-700">Дашборд загрузки по дням, зонам и отделам</span>
+          </li>
+          <li class="flex items-center gap-3">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="flex-shrink-0"><polyline points="20 6 9 17 4 12"/></svg>
+            <span class="text-[14px] text-slate-700">Ноль согласований — система решает сама</span>
+          </li>
+          <li class="flex items-center gap-3">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="flex-shrink-0"><polyline points="20 6 9 17 4 12"/></svg>
+            <span class="text-[14px] text-slate-700">Пиковые дни видны за неделю — управляй заранее</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════ PRODUCT ══════════════════ -->
+<section id="product" class="py-12 lg:py-24 bg-white">
+  <div class="max-w-6xl mx-auto px-5 lg:px-8">
+    <div class="reveal text-center mb-16">
+      <p class="text-sm font-semibold text-brand-600 uppercase tracking-widest mb-3">Продукт</p>
+      <h2 class="text-[32px] lg:text-[44px] font-black text-slate-900 leading-[1.1] tracking-tight mb-4">
+        Всё для гибридного офиса<br class="hidden lg:block"> в одной платформе
+      </h2>
+      <p class="text-[16px] text-slate-500 max-w-xl mx-auto">Заменяет Excel, Telegram-боты и устные договорённости. Сотрудники бронируют сами — вы видите всё в реальном времени.</p>
+    </div>
+
+    <!-- Feature 1: Floor Map -->
+    <div class="grid lg:grid-cols-2 gap-14 items-center mb-20">
+      <div class="reveal-l">
+        <span class="inline-block text-xs font-semibold text-brand-600 bg-brand-50 border border-brand-200 rounded-full px-3 py-1 mb-5">Карта офиса</span>
+        <h3 class="text-[26px] lg:text-[32px] font-black text-slate-900 leading-tight mb-4">
+          Интерактивная карта<br>с реальным статусом
+        </h3>
+        <p class="text-[15px] text-slate-500 leading-relaxed mb-6">Загрузите план этажа и расставьте столы прямо на нём. Сотрудники видят карту в реальном времени: что свободно, что занято, где сидит коллега.</p>
+        <ul class="space-y-3">
+          <li class="flex items-center gap-2.5 text-sm text-slate-600">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#dcfce7" stroke="#86efac"/><path d="M4.5 8.5l2.5 2L11 5.5" stroke="#16a34a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Загрузка PNG-плана — 1 минута
+          </li>
+          <li class="flex items-center gap-2.5 text-sm text-slate-600">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#dcfce7" stroke="#86efac"/><path d="M4.5 8.5l2.5 2L11 5.5" stroke="#16a34a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Зоны, переговорки, open space — любой макет
+          </li>
+          <li class="flex items-center gap-2.5 text-sm text-slate-600">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#dcfce7" stroke="#86efac"/><path d="M4.5 8.5l2.5 2L11 5.5" stroke="#16a34a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Несколько офисов и этажей в одном интерфейсе
+          </li>
+        </ul>
+      </div>
+      <div class="reveal-r">
+        <div class="scr-wrap">
+          <div class="scr-bar">
+            <div class="scr-dot" style="background:#fc5f57"></div>
+            <div class="scr-dot" style="background:#fdbc2c"></div>
+            <div class="scr-dot" style="background:#27c840"></div>
+          </div>
+          <img src="screenshots/screen-map.png" alt="Интерактивная карта офиса DeskBook">
+        </div>
+      </div>
+    </div>
+
+    <!-- Feature 2: Analytics -->
+    <div class="grid lg:grid-cols-2 gap-14 items-center mb-20">
+      <div class="reveal-l order-2 lg:order-1">
+        <div class="scr-wrap">
+          <div class="scr-bar">
+            <div class="scr-dot" style="background:#fc5f57"></div>
+            <div class="scr-dot" style="background:#fdbc2c"></div>
+            <div class="scr-dot" style="background:#27c840"></div>
+          </div>
+          <img src="screenshots/screen-analytics.png" alt="Аналитика загрузки DeskBook">
+        </div>
+      </div>
+      <div class="reveal-r order-1 lg:order-2">
+        <span class="inline-block text-xs font-semibold text-brand-600 bg-brand-50 border border-brand-200 rounded-full px-3 py-1 mb-5">Аналитика</span>
+        <h3 class="text-[26px] lg:text-[32px] font-black text-slate-900 leading-tight mb-4">
+          Данные для решений,<br>а не ощущения
+        </h3>
+        <p class="text-[15px] text-slate-500 leading-relaxed mb-6">Реальные данные: кто, когда, где. Обосновывайте оптимизацию аренды с цифрами.</p>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="bg-slate-50 rounded-xl p-4 border border-slate-100">
+            <div class="text-[22px] font-black gt mb-1">−30%</div>
+            <div class="text-sm text-slate-600">расходов на аренду</div>
+          </div>
+          <div class="bg-slate-50 rounded-xl p-4 border border-slate-100">
+            <div class="text-[22px] font-black gt mb-1">3×</div>
+            <div class="text-sm text-slate-600">быстрее решения по офису</div>
+          </div>
+          <div class="bg-slate-50 rounded-xl p-4 border border-slate-100">
+            <div class="text-[22px] font-black gt mb-1">100%</div>
+            <div class="text-sm text-slate-600">прозрачность использования</div>
+          </div>
+          <div class="bg-slate-50 rounded-xl p-4 border border-slate-100">
+            <div class="text-[22px] font-black gt mb-1">Авто</div>
+            <div class="text-sm text-slate-600">отчёты для CFO и Facilities</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Feature 3: Colleague search -->
+    <div class="grid lg:grid-cols-2 gap-14 items-center">
+      <div class="reveal-l">
+        <span class="inline-block text-xs font-semibold text-brand-600 bg-brand-50 border border-brand-200 rounded-full px-3 py-1 mb-5">Поиск коллег</span>
+        <h3 class="text-[26px] lg:text-[32px] font-black text-slate-900 leading-tight mb-4">
+          Найдите коллегу<br>за 5 секунд
+        </h3>
+        <p class="text-[15px] text-slate-500 leading-relaxed mb-6">Введите имя — увидите стол коллеги на карте прямо сейчас. Бронируйте рядом, планируйте командные дни.</p>
+        <ul class="space-y-3">
+          <li class="flex items-center gap-2.5 text-sm text-slate-600">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#dcfce7" stroke="#86efac"/><path d="M4.5 8.5l2.5 2L11 5.5" stroke="#16a34a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Поиск по имени — мгновенный результат
+          </li>
+          <li class="flex items-center gap-2.5 text-sm text-slate-600">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#dcfce7" stroke="#86efac"/><path d="M4.5 8.5l2.5 2L11 5.5" stroke="#16a34a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Навигация прямо на карте этажа
+          </li>
+          <li class="flex items-center gap-2.5 text-sm text-slate-600">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#dcfce7" stroke="#86efac"/><path d="M4.5 8.5l2.5 2L11 5.5" stroke="#16a34a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Список коллег в офисе сегодня
+          </li>
+        </ul>
+      </div>
+      <div class="reveal-r">
+        <div class="scr-wrap">
+          <div class="scr-bar">
+            <div class="scr-dot" style="background:#fc5f57"></div>
+            <div class="scr-dot" style="background:#fdbc2c"></div>
+            <div class="scr-dot" style="background:#27c840"></div>
+          </div>
+          <img src="screenshots/screen-team.png" alt="Поиск коллег DeskBook">
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════ HOW IT WORKS ══════════════════ -->
+<section id="howworks" class="py-12 lg:py-20 bg-white">
+  <div class="max-w-5xl mx-auto px-5 lg:px-8">
+    <div class="reveal text-center mb-14">
+      <p class="text-sm font-semibold text-brand-600 uppercase tracking-widest mb-3">Запуск</p>
+      <h2 class="text-[32px] lg:text-[42px] font-black text-slate-900 leading-[1.1] tracking-tight">
+        От договора до живого пилота — 3 дня
+      </h2>
+    </div>
+
+    <div class="grid md:grid-cols-3 gap-6 relative">
+      <!-- Connector -->
+      <div class="hidden md:block absolute top-8 left-[calc(33%+12px)] right-[calc(33%+12px)] h-px" style="background:linear-gradient(90deg,#aeebe0,#0891b2)"></div>
+
+      <div class="reveal d1 text-center">
+        <div class="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-5 text-white text-xl font-black shadow-md" style="background:linear-gradient(135deg,#1d8375,#0891b2)">1</div>
+        <h3 class="text-[17px] font-bold text-slate-900 mb-2">День 1. Настройка</h3>
+        <p class="text-[13px] text-slate-500 leading-relaxed">Загружаем планы этажей, настраиваем офисы и рабочие места. Вы предоставляете список сотрудников — мы подключаем.</p>
+      </div>
+
+      <div class="reveal d2 text-center">
+        <div class="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-5 text-white text-xl font-black shadow-md" style="background:linear-gradient(135deg,#0891b2,#0ea5e9)">2</div>
+        <h3 class="text-[17px] font-bold text-slate-900 mb-2">День 2. Конфигурация</h3>
+        <p class="text-[13px] text-slate-500 leading-relaxed">Расставляем столы на карте, настраиваем политики бронирования и зоны доступа.</p>
+      </div>
+
+      <div class="reveal d3 text-center">
+        <div class="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-5 text-white text-xl font-black shadow-md" style="background:linear-gradient(135deg,#0ea5e9,#38bdf8)">3</div>
+        <h3 class="text-[17px] font-bold text-slate-900 mb-2">День 3. Запуск</h3>
+        <p class="text-[13px] text-slate-500 leading-relaxed">Сотрудники получают доступ и начинают бронировать. Аналитика доступна с первого дня.</p>
+      </div>
+    </div>
+
+    <div class="reveal mt-12 text-center">
+      <a href="#pilot" class="btn btn-dark">Начать пилот сейчас →</a>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════ ROI ══════════════════ -->
+<section id="roi" class="py-12 lg:py-24" style="background:linear-gradient(135deg,#0a2e2a 0%,#1d8375 55%,#0891b2 100%);">
+  <div class="max-w-5xl mx-auto px-5 lg:px-8">
+    <div class="reveal text-center mb-14">
+      <p class="text-sm font-semibold text-brand-300 uppercase tracking-widest mb-3">Финансовый эффект</p>
+      <h2 class="text-[32px] lg:text-[44px] font-black text-white leading-[1.1] tracking-tight">
+        Офис стоит дорого.<br>DeskBook делает его окупаемым.
+      </h2>
+      <p class="text-[16px] text-brand-200 mt-4 max-w-xl mx-auto">Компании теряют деньги на пустующих рабочих местах. DeskBook превращает данные о загрузке в конкретные решения.</p>
+    </div>
+
+    <div class="grid md:grid-cols-3 gap-5 mb-14">
+      <div class="reveal d1 text-center bg-white bg-opacity-10 rounded-2xl p-8 border border-white border-opacity-15">
+        <div class="big-num text-white mb-2">−30%</div>
+        <div class="text-[15px] font-semibold text-brand-200 mb-1">Экономия на аренде</div>
+        <p class="text-[12px] text-brand-300 leading-relaxed">Сокращайте площадь без потери комфорта — платите только за то, что реально используется</p>
+      </div>
+      <div class="reveal d2 text-center bg-white bg-opacity-10 rounded-2xl p-8 border border-white border-opacity-15">
+        <div class="big-num text-white mb-2">−80%</div>
+        <div class="text-[15px] font-semibold text-brand-200 mb-1">Ручная работа HR/admin</div>
+        <p class="text-[12px] text-brand-300 leading-relaxed">10+ часов в неделю возвращаются — на задачи, а не на таблицы и согласования</p>
+      </div>
+      <div class="reveal d3 text-center bg-white bg-opacity-10 rounded-2xl p-8 border border-white border-opacity-15">
+        <div class="big-num text-white mb-2">+25%</div>
+        <div class="text-[15px] font-semibold text-brand-200 mb-1">Отдача от офиса</div>
+        <p class="text-[12px] text-brand-300 leading-relaxed">Та же площадь — больше пользы: равномерная загрузка, ноль пустых мест в пиковые дни</p>
+      </div>
+    </div>
+
+    <!-- ROI Calculator -->
+    <div class="reveal bg-white bg-opacity-10 border border-white border-opacity-15 rounded-2xl p-7 lg:p-9">
+      <div class="grid md:grid-cols-2 gap-8 items-center">
+        <div>
+          <h3 class="text-[20px] font-black text-white mb-3">Пример расчёта для вашего офиса</h3>
+          <p class="text-[14px] text-brand-200 leading-relaxed">300 сотрудников, офис 500 м² в Алматы. Аренда ~3 500 ₸/м²/мес — это 1 750 000 ₸ каждый месяц.</p>
+        </div>
+        <div class="space-y-3">
+          <div class="flex items-center justify-between text-sm">
+            <span class="text-brand-200">Загрузка офиса сейчас</span>
+            <span class="font-bold text-white">~45% — вы переплачиваете</span>
+          </div>
+          <div class="flex items-center justify-between text-sm">
+            <span class="text-brand-200">С DeskBook через 3 месяца</span>
+            <span class="font-bold text-white">~75% — оптимально</span>
+          </div>
+          <div class="h-px bg-white bg-opacity-20"></div>
+          <div class="flex items-center justify-between">
+            <span class="text-[14px] font-semibold text-brand-200">Экономия в год</span>
+            <span class="text-[20px] font-black text-white">~6 300 000 ₸</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════ PILOT CTA ══════════════════ -->
+<section id="pilot" class="py-12 lg:py-24" style="background:radial-gradient(ellipse 80% 60% at 50% 0%, #aeebe030 0%, transparent 60%), #f8fafc;">
+  <div class="max-w-2xl mx-auto px-5 lg:px-8">
+    <div class="reveal text-center mb-10">
+      <div class="inline-flex items-center gap-2 bg-green-50 border border-green-200 rounded-full px-4 py-1.5 mb-6">
+        <span class="w-1.5 h-1.5 rounded-full bg-green-500 pulse"></span>
+        <span class="text-[12px] font-semibold text-green-700">Пилот бесплатно · 30 дней · без обязательств</span>
+      </div>
+      <h2 class="text-[32px] lg:text-[44px] font-black text-slate-900 leading-[1.1] tracking-tight mb-4">
+        Начните бесплатно.<br>Решите потом.
+      </h2>
+      <p class="text-[16px] text-slate-500 leading-relaxed">
+        30 дней полного функционала — без договора, без IT-отдела, без обязательств. Свяжемся в течение часа.
+      </p>
+    </div>
+
+    <!-- Trust strip — прямо над формой -->
+    <div class="reveal grid grid-cols-1 sm:grid-cols-3 gap-3 mb-8">
+      <div class="text-center bg-white rounded-2xl border border-slate-200 px-3 py-4">
+        <div class="text-[13px] font-bold text-slate-900 mb-0.5">Запуск за 3 дня</div>
+        <div class="text-[11px] text-slate-500">без IT-проекта</div>
+      </div>
+      <div class="text-center bg-white rounded-2xl border border-slate-200 px-3 py-4">
+        <div class="text-[13px] font-bold text-slate-900 mb-0.5">Данные в РК</div>
+        <div class="text-[11px] text-slate-500">серверы в Казахстане</div>
+      </div>
+      <div class="text-center bg-white rounded-2xl border border-slate-200 px-3 py-4">
+        <div class="text-[13px] font-bold text-slate-900 mb-0.5">Поддержка 24/7</div>
+        <div class="text-[11px] text-slate-500">команда в Алматы</div>
+      </div>
+    </div>
+
+    <div class="reveal bg-white rounded-3xl border border-slate-200 p-8 shadow-sm">
+      <form id="pilotForm" onsubmit="submitForm(event)" class="space-y-4">
+        <div class="grid sm:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-[12px] font-semibold text-slate-600 mb-1.5">Ваше имя</label>
+            <input type="text" placeholder="Асель Бекова" required class="w-full text-sm border border-slate-200 rounded-xl px-3.5 py-3 focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100 transition-all placeholder-slate-300">
+          </div>
+          <div>
+            <label class="block text-[12px] font-semibold text-slate-600 mb-1.5">Компания</label>
+            <input type="text" placeholder="ТОО «Название»" required class="w-full text-sm border border-slate-200 rounded-xl px-3.5 py-3 focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100 transition-all placeholder-slate-300">
+          </div>
+        </div>
+        <div>
+          <label class="block text-[12px] font-semibold text-slate-600 mb-1.5">Рабочий email</label>
+          <input type="email" placeholder="asel@company.kz" required class="w-full text-sm border border-slate-200 rounded-xl px-3.5 py-3 focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100 transition-all placeholder-slate-300">
+        </div>
+        <div>
+          <label class="block text-[12px] font-semibold text-slate-600 mb-1.5">Размер команды</label>
+          <select required class="w-full text-sm border border-slate-200 rounded-xl px-3.5 py-3 focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100 transition-all text-slate-700 bg-white">
+            <option value="" disabled selected class="text-slate-300">Сколько человек в офисе?</option>
+            <option>50–100 человек</option>
+            <option>100–300 человек</option>
+            <option>300–700 человек</option>
+            <option>Более 700 человек</option>
+          </select>
+        </div>
+        <button type="submit" id="submitBtn" class="btn btn-brand w-full justify-center text-[16px] py-4">
+          Получить бесплатный доступ →
+        </button>
+        <!-- Microcopy -->
+        <div class="flex items-center justify-center gap-5 pt-1">
+          <span class="flex items-center gap-1.5 text-[11px] text-slate-400">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            Без кредитной карты
+          </span>
+          <span class="flex items-center gap-1.5 text-[11px] text-slate-400">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Ответим за 1 час
+          </span>
+          <span class="flex items-center gap-1.5 text-[11px] text-slate-400">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Отменить в любой момент
+          </span>
+        </div>
+      </form>
+      <div id="formSuccess" class="hidden text-center py-8">
+        <div class="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 14l6 6L23 7"/></svg>
+        </div>
+        <h3 class="text-[20px] font-black text-slate-900 mb-2">Заявка принята — спасибо!</h3>
+        <p class="text-[14px] text-slate-500 mb-6">Свяжемся в течение часа и согласуем удобное время для демо.</p>
+        <div class="text-left space-y-3 max-w-xs mx-auto">
+          <div class="flex items-start gap-3">
+            <div class="w-6 h-6 rounded-full bg-brand-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+              <span class="text-[11px] font-black text-brand-700">1</span>
+            </div>
+            <p class="text-[13px] text-slate-600">Менеджер свяжется и уточнит детали вашего офиса</p>
+          </div>
+          <div class="flex items-start gap-3">
+            <div class="w-6 h-6 rounded-full bg-brand-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+              <span class="text-[11px] font-black text-brand-700">2</span>
+            </div>
+            <p class="text-[13px] text-slate-600">Настроим карту и рабочие места под вас</p>
+          </div>
+          <div class="flex items-start gap-3">
+            <div class="w-6 h-6 rounded-full bg-brand-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+              <span class="text-[11px] font-black text-brand-700">3</span>
+            </div>
+            <p class="text-[13px] text-slate-600">Команда начнёт бронировать места через 3 дня</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="reveal mt-8 flex flex-col sm:flex-row items-center justify-center gap-6 text-sm text-slate-500">
+      <a href="tel:+77006070515" class="flex items-center gap-2 hover:text-slate-700 transition-colors">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3a1 1 0 011-1h2.5a1 1 0 011 1l1 3a1 1 0 01-.45.84L6 7.5a7 7 0 003.5 3.5l.66-1.05a1 1 0 01.84-.45l3 1a1 1 0 011 1V14a1 1 0 01-1 1C7.4 15 1 8.6 1 2.5a.5.5 0 01.5-.5H2z"/></svg>
+        +7 700 607 05 15
+      </a>
+      <a href="mailto:deskbook@yandex.kz" class="flex items-center gap-2 hover:text-slate-700 transition-colors">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="14" height="10" rx="2"/><path d="M1 5l7 5 7-5"/></svg>
+        deskbook@yandex.kz
+      </a>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════ FAQ ══════════════════ -->
+<section class="py-12 lg:py-20 bg-white">
+  <div class="max-w-2xl mx-auto px-5 lg:px-8">
+    <div class="reveal text-center mb-10">
+      <h2 class="text-[28px] lg:text-[36px] font-black text-slate-900 leading-tight">Частые вопросы</h2>
+    </div>
+    <div class="reveal space-y-3">
+      <details class="card rounded-2xl overflow-hidden">
+        <summary class="flex items-center justify-between px-6 py-4 cursor-pointer select-none">
+          <span class="text-[14px] font-semibold text-slate-800">Сколько стоит DeskBook?</span>
+          <span class="faq-icon text-slate-400 flex-shrink-0 ml-3">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="9" y1="3" x2="9" y2="15"/><line x1="3" y1="9" x2="15" y2="9"/></svg>
+          </span>
+        </summary>
+        <div class="faq-body px-6 pb-4 text-[13px] text-slate-500 leading-relaxed">Стоимость рассчитывается индивидуально в зависимости от числа сотрудников и офисов. Пилот — бесплатно на 30 дней. Оставьте заявку, и мы подготовим персональное предложение.</div>
+      </details>
+      <details class="card rounded-2xl overflow-hidden">
+        <summary class="flex items-center justify-between px-6 py-4 cursor-pointer select-none">
+          <span class="text-[14px] font-semibold text-slate-800">Нужна ли интеграция с нашей IT-системой?</span>
+          <span class="faq-icon text-slate-400 flex-shrink-0 ml-3">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="9" y1="3" x2="9" y2="15"/><line x1="3" y1="9" x2="15" y2="9"/></svg>
+          </span>
+        </summary>
+        <div class="faq-body px-6 pb-4 text-[13px] text-slate-500 leading-relaxed">Нет обязательных интеграций. DeskBook работает как самостоятельный веб-сервис — достаточно браузера. При необходимости можем настроить интеграцию с вашей IT-системой.</div>
+      </details>
+      <details class="card rounded-2xl overflow-hidden">
+        <summary class="flex items-center justify-between px-6 py-4 cursor-pointer select-none">
+          <span class="text-[14px] font-semibold text-slate-800">Данные хранятся в Казахстане?</span>
+          <span class="faq-icon text-slate-400 flex-shrink-0 ml-3">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="9" y1="3" x2="9" y2="15"/><line x1="3" y1="9" x2="15" y2="9"/></svg>
+          </span>
+        </summary>
+        <div class="faq-body px-6 pb-4 text-[13px] text-slate-500 leading-relaxed">Да. Все данные хранятся на серверах в Казахстане, соответствуют требованиям закона РК о персональных данных. Возможен deploy на серверах клиента (on-premise).</div>
+      </details>
+      <details class="card rounded-2xl overflow-hidden">
+        <summary class="flex items-center justify-between px-6 py-4 cursor-pointer select-none">
+          <span class="text-[14px] font-semibold text-slate-800">Как долго занимает внедрение?</span>
+          <span class="faq-icon text-slate-400 flex-shrink-0 ml-3">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="9" y1="3" x2="9" y2="15"/><line x1="3" y1="9" x2="15" y2="9"/></svg>
+          </span>
+        </summary>
+        <div class="faq-body px-6 pb-4 text-[13px] text-slate-500 leading-relaxed">Стандартный пилот запускается за 3 рабочих дня: настройка офиса, карты и пользователей. Полноценное внедрение с обучением admin-команды — 1–2 недели.</div>
+      </details>
+      <details class="card rounded-2xl overflow-hidden">
+        <summary class="flex items-center justify-between px-6 py-4 cursor-pointer select-none">
+          <span class="text-[14px] font-semibold text-slate-800">Есть ли мобильное приложение?</span>
+          <span class="faq-icon text-slate-400 flex-shrink-0 ml-3">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="9" y1="3" x2="9" y2="15"/><line x1="3" y1="9" x2="15" y2="9"/></svg>
+          </span>
+        </summary>
+        <div class="faq-body px-6 pb-4 text-[13px] text-slate-500 leading-relaxed">DeskBook — Progressive Web App (PWA). Работает в браузере на телефоне без установки из App Store. Нативные iOS/Android приложения в разработке.</div>
+      </details>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════ FOOTER ══════════════════ -->
+<footer class="py-14 bg-slate-950">
+  <div class="max-w-6xl mx-auto px-5 lg:px-8">
+    <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-8 mb-10">
+      <!-- Logo + desc -->
+      <div class="max-w-xs">
+        <div class="flex items-center gap-2.5 mb-3">
+          <div class="w-8 h-8 rounded-[10px] flex items-center justify-center" style="background:linear-gradient(135deg,#1d8375,#0891b2)">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6" height="6" rx="1.5" fill="white" opacity=".9"/><rect x="9" y="1" width="6" height="6" rx="1.5" fill="white" opacity=".55"/><rect x="1" y="9" width="6" height="6" rx="1.5" fill="white" opacity=".55"/><rect x="9" y="9" width="6" height="6" rx="1.5" fill="white" opacity=".9"/></svg>
+          </div>
+          <span class="text-[17px] font-bold tracking-tight text-white">DeskBook</span>
+        </div>
+        <p class="text-[13px] text-slate-400 leading-relaxed">Платформа управления гибридным офисом. Разработано в Казахстане для казахстанских компаний.</p>
+      </div>
+
+      <!-- Links -->
+      <div class="flex flex-wrap gap-8 text-[13px] text-slate-400">
+        <div class="flex flex-col gap-2.5">
+          <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Продукт</span>
+          <a href="#product" class="hover:text-white transition-colors">Карта офиса</a>
+          <a href="#product" class="hover:text-white transition-colors">Аналитика</a>
+          <a href="#product" class="hover:text-white transition-colors">Поиск коллег</a>
+        </div>
+        <div class="flex flex-col gap-2.5">
+          <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Компания</span>
+          <a href="#" class="hover:text-white transition-colors">О нас</a>
+          <a href="#pilot" class="hover:text-white transition-colors">Запустить пилот</a>
+          <a href="mailto:deskbook@yandex.kz" class="hover:text-white transition-colors">Контакты</a>
+        </div>
+      </div>
+
+      <!-- Contact -->
+      <div class="flex flex-col gap-2.5 text-[13px] text-slate-400">
+        <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Казахстан</span>
+        <a href="tel:+77006070515" class="hover:text-white transition-colors">+7 700 607 05 15</a>
+        <a href="mailto:deskbook@yandex.kz" class="hover:text-white transition-colors">deskbook@yandex.kz</a>
+        <span>Алматы / Астана</span>
+      </div>
+    </div>
+
+    <div class="border-t border-slate-800 pt-8 flex flex-col sm:flex-row items-center justify-between gap-3">
+      <p class="text-[12px] text-slate-500">© 2025 DeskBook. Все права защищены.</p>
+      <div class="flex gap-5 text-[12px] text-slate-500">
+        <a href="#" class="hover:text-white transition-colors">Конфиденциальность</a>
+        <a href="#" class="hover:text-white transition-colors">Оферта</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+
+<!-- Sticky mobile CTA (hidden on desktop) -->
+<div id="mobile-cta" class="lg:hidden fixed bottom-0 inset-x-0 z-40 p-4 bg-white border-t border-slate-200 shadow-lg">
+  <a href="#pilot" class="btn btn-brand w-full justify-center text-[15px] py-3.5">Запустить пилот бесплатно →</a>
+</div>
+
+<script>
+  // Enable animations only when JS is confirmed running
+  document.documentElement.classList.add('js-ready');
+
+  // Header scroll
+  const hdr = document.getElementById('hdr');
+  window.addEventListener('scroll', () => {
+    hdr.classList.toggle('scrolled', window.scrollY > 20);
+  }, { passive: true });
+
+  // Sticky mobile CTA — show after hero, hide near form
+  const mobileCta = document.getElementById('mobile-cta');
+  const pilotSection = document.getElementById('pilot');
+  if (mobileCta && pilotSection) {
+    window.addEventListener('scroll', () => {
+      const heroBottom = 400;
+      const formTop = pilotSection.getBoundingClientRect().top + window.scrollY - 200;
+      const y = window.scrollY;
+      mobileCta.classList.toggle('visible', y > heroBottom && y < formTop);
+    }, { passive: true });
+  }
+
+  // Scroll reveal
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        e.target.classList.add('in');
+        io.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0, rootMargin: '0px 0px 0px 0px' });
+
+  const revealEls = document.querySelectorAll('.reveal, .reveal-l, .reveal-r');
+  revealEls.forEach(el => io.observe(el));
+
+  // Fallback: force-show any element already in viewport on load
+  function checkInView() {
+    revealEls.forEach(el => {
+      const r = el.getBoundingClientRect();
+      if (r.top < window.innerHeight && r.bottom > 0) {
+        el.classList.add('in');
+      }
+    });
+  }
+  checkInView();
+  window.addEventListener('scroll', checkInView, { passive: true });
+
+  // Form submit
+  function submitForm(e) {
+    e.preventDefault();
+    const btn = document.getElementById('submitBtn');
+    btn.textContent = 'Отправляем…';
+    btn.disabled = true;
+    setTimeout(() => {
+      document.getElementById('pilotForm').classList.add('hidden');
+      document.getElementById('formSuccess').classList.remove('hidden');
+    }, 900);
+  }
+</script>
+
+</body>
+</html>

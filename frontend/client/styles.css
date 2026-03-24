@@ -468,6 +468,8 @@ body {
 .colleague-name { font-size: 13px; font-weight: 600; }
 .colleague-desk { font-size: 12px; color: var(--text-2); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .colleague-time { font-size: 12px; color: var(--text-3); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.colleague-profile-btn { flex-shrink: 0; background: none; border: none; cursor: pointer; font-size: 16px; padding: 2px 4px; border-radius: 6px; opacity: 0.55; transition: opacity .15s; }
+.colleague-profile-btn:hover { opacity: 1; background: var(--border); }
 .colleague-me-tag   { font-size: 10px; font-weight: 600; color: var(--primary); background: white; border: 1px solid var(--primary-border); border-radius: 10px; padding: 1px 6px; margin-left: 4px; }
 .colleague-team-tag { font-size: 10px; font-weight: 600; color: #7c3aed; background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 10px; padding: 1px 6px; margin-left: 4px; }
 .search-team-badge  { font-size: 10px; font-weight: 600; color: #7c3aed; background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 10px; padding: 1px 6px; margin-left: 6px; vertical-align: middle; }
@@ -540,6 +542,63 @@ body {
   50%       { opacity: 0.75; }
 }
 .desk-tile.highlighted { animation: pulse-highlight 1.5s ease-in-out infinite; }
+
+/* ── Sims-style colleague plumbob (HTML overlay) ── */
+.colleague-plumbob {
+  position: absolute;
+  transform: translateX(-50%) translateY(-100%);
+  pointer-events: none;
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+.plumbob-name {
+  background: rgba(255,255,255,0.93);
+  border: 1.5px solid #16a34a;
+  color: #14532d;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.18);
+  margin-bottom: 3px;
+}
+.plumbob-gem {
+  width: 24px;
+  height: 30px;
+  clip-path: polygon(50% 0%, 100% 42%, 50% 100%, 0% 42%);
+  background: linear-gradient(160deg, #4ade80 0%, #22c55e 45%, #15803d 100%);
+  filter: drop-shadow(0 2px 6px rgba(22,163,74,0.65));
+  animation: plumbob-bob 1.6s ease-in-out infinite;
+}
+.plumbob-connector {
+  width: 2px;
+  height: 14px;
+  background: repeating-linear-gradient(to bottom, #16a34a 0 4px, transparent 4px 8px);
+  opacity: 0.7;
+}
+@keyframes plumbob-bob {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-9px); }
+}
+/* allow SVG content to render outside viewBox */
+#desk-svg-overlay,
+#inline-floor-svg { overflow: visible !important; }
+
+/* SVG-embedded colleague pulse ring */
+@keyframes colleague-pulse {
+  0%   { transform: scale(1);   opacity: 0.85; }
+  70%  { transform: scale(2.4); opacity: 0.15; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+.colleague-pulse-ring {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: colleague-pulse 1.4s ease-out infinite;
+}
 
 .desk-search-arrow {
   pointer-events: none;
@@ -1488,6 +1547,16 @@ body {
 }
 .profile-modal-row a { color: var(--primary); text-decoration: none; }
 .profile-modal-row a:hover { text-decoration: underline; }
+.profile-find-btn {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 14px; width: 100%;
+  padding: 8px 14px; border-radius: 8px;
+  background: var(--primary); color: #fff; border: none;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: background .15s;
+}
+.profile-find-btn:hover:not(:disabled) { background: var(--primary-hover, #0052cc); }
+.profile-find-btn:disabled { opacity: 0.6; cursor: default; }
 
 /* ── Responsive ── */
 @media (max-width: 767px) {

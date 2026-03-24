@@ -901,8 +901,18 @@ def search_users(
             )
             if start_time and end_time:
                 q_resv = q_resv.filter(
-                    models.Reservation.start_time < end_time,
-                    models.Reservation.end_time > start_time,
+                    or_(
+                        # Full-day bookings (NULL times) always overlap any window
+                        and_(
+                            models.Reservation.start_time.is_(None),
+                            models.Reservation.end_time.is_(None),
+                        ),
+                        # Timed bookings — standard overlap check
+                        and_(
+                            models.Reservation.start_time < end_time,
+                            models.Reservation.end_time > start_time,
+                        ),
+                    )
                 )
             resv = q_resv.first()
             if resv:

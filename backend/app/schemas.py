@@ -147,8 +147,8 @@ class ReservationBase(BaseModel):
     desk_id: PositiveInt
     user_id: str = Field(..., min_length=1, max_length=120)
     reservation_date: date
-    start_time: time
-    end_time: time
+    start_time: Optional[time] = None
+    end_time: Optional[time] = None
 
     def model_post_init(self, __context: object) -> None:
         self.user_id = _strip(self.user_id) or ""
@@ -456,8 +456,10 @@ class FloorMapRevisionResponse(BaseModel):
 
 class StructureElement(BaseModel):
     """A wall, boundary, partition, or door in the layout."""
+    model_config = ConfigDict(extra="allow")  # preserve all fields on round-trip (e.g. door cx/cy/type)
+
     id: str
-    pts: list[list[float]]      # [[x, y], ...]  — at least 2 points
+    pts: list[list[float]] = Field(default_factory=list)  # [[x, y], ...] — walls/boundaries; empty for new-style doors
     thick: float = 4.0
     closed: bool = False
     label: Optional[str] = None

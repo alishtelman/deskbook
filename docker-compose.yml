@@ -45,5 +45,36 @@ services:
     depends_on:
       - backend
 
+  landing:
+    build: ./landing
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./landing/index.html:/usr/share/nginx/html/index.html:ro
+      - ./landing/screenshots:/usr/share/nginx/html/screenshots:ro
+
+  pg_backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        while true; do
+          FILENAME=/backups/deskbook_$$(date +%Y%m%d_%H%M%S).sql.gz;
+          pg_dump -h postgres -U $${POSTGRES_USER} $${POSTGRES_DB} | gzip > $$FILENAME;
+          echo \"[backup] saved $$FILENAME\";
+          find /backups -name '*.sql.gz' -mtime +7 -delete;
+          sleep 21600;
+        done
+      "
+
 volumes:
   postgres_data:
