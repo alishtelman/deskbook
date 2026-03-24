@@ -817,20 +817,19 @@
     btn.textContent = 'Отправляем…';
     btn.disabled = true;
 
-    const data = {
-      name:      form.querySelector('[placeholder="Асель Бекова"]').value,
-      company:   form.querySelector('[placeholder="ТОО «Название»"]').value,
-      email:     form.querySelector('[type="email"]').value,
-      team_size: form.querySelector('select').value,
-    };
+    const data = new FormData();
+    data.append('name',      form.querySelector('[placeholder="Асель Бекова"]').value);
+    data.append('company',   form.querySelector('[placeholder="ТОО «Название»"]').value);
+    data.append('email',     form.querySelector('[type="email"]').value);
+    data.append('team_size', form.querySelector('select').value);
 
     try {
-      await fetch('http://localhost:8000/leads', {
+      await fetch('https://formspree.io/f/mjganzjp', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+        body: data,
+        headers: { 'Accept': 'application/json' },
       });
-    } catch (_) { /* не блокируем UX если бэкенд недоступен */ }
+    } catch (_) {}
 
     form.classList.add('hidden');
     document.getElementById('formSuccess').classList.remove('hidden');
