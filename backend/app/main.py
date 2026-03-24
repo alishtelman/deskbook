@@ -1269,34 +1269,33 @@ class LeadRequest(schemas.BaseModel):
 
 @app.post("/leads", status_code=201)
 async def submit_lead(lead: LeadRequest):
-    """Receive a landing-page lead and send an email notification."""
-    if not settings.SMTP_USER or not settings.SMTP_PASSWORD:
-        # SMTP not configured — accept silently so form still works
+    """Receive a landing-page lead and send a Telegram notification."""
+    if not settings.TELEGRAM_BOT_TOKEN or not settings.TELEGRAM_CHAT_ID:
         return {"ok": True}
 
-    import smtplib, ssl
-    from email.mime.text import MIMEText
+    import httpx
 
-    body = (
-        f"Новая заявка на пилот DeskBook\n\n"
-        f"Имя:      {lead.name}\n"
-        f"Компания: {lead.company}\n"
-        f"Email:    {lead.email}\n"
-        f"Команда:  {lead.team_size}\n"
+    text = (
+        f"🔔 *Новая заявка на пилот DeskBook*\n\n"
+        f"👤 *Имя:* {lead.name}\n"
+        f"🏢 *Компания:* {lead.company}\n"
+        f"📧 *Email:* {lead.email}\n"
+        f"👥 *Команда:* {lead.team_size}"
     )
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = f"[DeskBook] Заявка от {lead.company}"
-    msg["From"] = settings.SMTP_USER
-    msg["To"] = settings.LEAD_TO_EMAIL or settings.SMTP_USER
 
     try:
-        ctx = ssl.create_default_context()
-        with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, context=ctx) as s:
-            s.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-            s.sendmail(msg["From"], [msg["To"]], msg.as_bytes())
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": settings.TELEGRAM_CHAT_ID,
+                    "text": text,
+                    "parse_mode": "Markdown",
+                },
+                timeout=5,
+            )
     except Exception as exc:
-        # Don't fail the user-facing request on mail errors
         import logging
-        logging.getLogger(__name__).error("Lead email failed: %s", exc)
+        logging.getLogger(__name__).error("Telegram lead notification failed: %s", exc)
 
     return {"ok": True}
